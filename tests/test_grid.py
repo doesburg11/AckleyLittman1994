@@ -1,0 +1,150 @@
+import numpy as np
+import pytest
+
+from altruism.genome import Genome
+from altruism.grid import COMPASS_OFFSETS, PHASE_OFFSETS, N_QUAD_INDIVIDUALS, GridWorld
+from altruism.world import Individual, N_INDIVIDUALS
+
+
+@pytest.fixture
+def rng():
+    return np.random.default_rng(0)
+
+
+def test_grid_initializes_every_cell_with_eight_individuals():
+    world = GridWorld(seed=0, grid_size=4)
+    assert len(world.cells) == 4
+    for row in world.cells:
+        assert len(row) == 4
+        for cell in row:
+            assert len(cell.individuals) == N_INDIVIDUALS
+
+
+def test_wind_migration_moves_exact_slot_to_destination_vacated_slot():
+    """Forces direction index 0 (COMPASS_OFFSETS[0] == (-1, 0), i.e. every
+    cell's slot-0 individual moves one row 'north') and forces every cell's
+    emigrant to be its own slot 0. The individual that left cell (r, c)
+    must land in slot 0 of cell (r-1, c) -- the exact slot vacated there --
+    and every other slot must be untouched."""
+    world = GridWorld(seed=0, grid_size=4)
+    n = world.grid_size
+    assert COMPASS_OFFSETS[0] == (-1, 0)
+
+    before = [[list(world.cells[r][c].individuals) for c in range(n)] for r in range(n)]
+
+    class _FixedWindRNG:
+        def integers(self, low, high=None, size=None):
+            if size is None:
+                return 0  # direction index -> COMPASS_OFFSETS[0]
+            return np.zeros(size, dtype=int)  # every cell's emigrant is slot 0
+
+    world.rng = _FixedWindRNG()
+    world._run_wind()
+
+    for r in range(n):
+        for c in range(n):
+            dest_r = (r - 1) % n
+            assert world.cells[dest_r][c].individuals[0] is before[r][c][0]
+            for slot in range(1, N_INDIVIDUALS):
+                assert world.cells[r][c].individuals[slot] is before[r][c][slot]
+
+
+def test_wind_migration_preserves_population_as_a_permutation(rng):
+    world = GridWorld(seed=int(rng.integers(0, 1_000_000)), grid_size=6)
+    before_ids = {id(ind) for row in world.cells for cell in row for ind in cell.individuals}
+    world._run_wind()
+    after_ids = {id(ind) for row in world.cells for cell in row for ind in cell.individuals}
+    assert before_ids == after_ids
+    for row in world.cells:
+        for cell in row:
+            assert len(cell.individuals) == N_INDIVIDUALS
+
+
+def test_festival_quad_phase_cycle_covers_all_eight_neighbors():
+    world = GridWorld(seed=2, grid_size=8)
+    n = world.grid_size
+    r, c = 3, 5
+    expected_neighbors = {((r + dr) % n, (c + dc) % n) for dr, dc in COMPASS_OFFSETS}
+
+    covered = set()
+    for phase_offset in PHASE_OFFSETS:
+        row_offset, col_offset = phase_offset
+        g_row = ((r - row_offset) % n) // 2
+        g_col = ((c - col_offset) % n) // 2
+        quad = world._quad_cells(g_row, g_col, phase_offset)
+        covered.update(cell for cell in quad if cell != (r, c))
+
+    assert covered == expected_neighbors
+
+
+def test_festival_reproduce_parents_come_from_top_quarter_of_quad(rng):
+    """Same technique as test_world.py's
+    test_local_reproduce_parents_come_from_top_half, generalized to the
+    32-individual quad pool: the first cell (by quad_cells order) gets
+    all-zero genomes and is given the highest scores (top quarter of 32),
+    the other three cells get all-one genomes and lower scores. If
+    festival reproduction ever drew a parent from outside the top
+    quarter, the offspring's genome could contain 1-bits; under correct
+    top-quarter-only parentage the offspring's bit-sum must always be
+    exactly 0."""
+    grid_size = 2
+    for _ in range(50):
+        world = GridWorld(seed=int(rng.integers(0, 1_000_000)), grid_size=grid_size)
+        quad_cells = world._quad_cells(0, 0, PHASE_OFFSETS[0])
+        assert len(quad_cells) == 4
+
+        for i, (r, c) in enumerate(quad_cells):
+            bit_value = 0 if i == 0 else 1
+            world.cells[r][c].individuals = [
+                Individual(genome=Genome(bits=np.full(448, bit_value, dtype=np.uint8)))
+                for _ in range(N_INDIVIDUALS)
+            ]
+
+        scores = np.zeros((grid_size, grid_size, N_INDIVIDUALS))
+        flat = 0
+        for (r, c) in quad_cells:
+            for slot in range(N_INDIVIDUALS):
+                scores[r, c, slot] = N_QUAD_INDIVIDUALS - 1 - flat  # strictly descending by quad order
+                flat += 1
+
+        before = {
+            (r, c, slot): id(world.cells[r][c].individuals[slot])
+            for (r, c) in quad_cells
+            for slot in range(N_INDIVIDUALS)
+        }
+
+        world._run_festival(scores)
+
+        # Identity, not genome content, marks the replaced slot: a victim
+        # drawn from the top-quarter (all-zero) group gets a new offspring
+        # Individual whose genome is *also* all-zero, so content alone
+        # can't distinguish "replaced" from "untouched" in that case.
+        replaced = [
+            (r, c, slot)
+            for (r, c) in quad_cells
+            for slot in range(N_INDIVIDUALS)
+            if id(world.cells[r][c].individuals[slot]) != before[(r, c, slot)]
+        ]
+        assert len(replaced) == 1, f"exactly one individual across the quad must be replaced, got {len(replaced)}"
+        r, c, slot = replaced[0]
+        offspring_bits = world.cells[r][c].individuals[slot].genome.bits
+        assert offspring_bits.sum() == 0, "offspring must be bred from top-quarter (all-zero) parents only"
+
+
+def test_end_to_end_small_grid_run_is_reproducible_and_conserves_population():
+    def run(seed):
+        world = GridWorld(seed=seed, grid_size=4, wind_period=3, festival_period=2)
+        for _ in range(40):
+            world.run_day()
+        return world
+
+    world_a = run(seed=7)
+    world_b = run(seed=7)
+
+    for r in range(4):
+        for c in range(4):
+            assert len(world_a.cells[r][c].individuals) == N_INDIVIDUALS
+            for slot in range(N_INDIVIDUALS):
+                bits_a = world_a.cells[r][c].individuals[slot].genome.bits
+                bits_b = world_b.cells[r][c].individuals[slot].genome.bits
+                assert np.array_equal(bits_a, bits_b)

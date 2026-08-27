@@ -68,6 +68,23 @@ def _latin_square_locations(rng: np.random.Generator) -> list[list[int]]:
     return loc_by_rep
 
 
+def select_parents_and_victim(
+    scores: np.ndarray, top_k: int, rng: np.random.Generator
+) -> tuple[int, int, int]:
+    """Shared rank/select/kill mechanic behind both local reproduction
+    (Section 2.1, top_k=4 of 8) and festival reproduction (Section 2.3,
+    top_k=8 of 32) -- same rule, different pool size. Ranks `scores`
+    descending; two parents are chosen uniformly (with replacement) from
+    the top `top_k`; one victim is chosen uniformly from the whole pool.
+    Returns (parent_a_index, parent_b_index, victim_index), indices into
+    `scores`."""
+    ranked = np.argsort(-scores)  # best first
+    top = ranked[:top_k]
+    parent_a, parent_b = rng.choice(top, size=2, replace=True)
+    victim = int(rng.integers(0, len(scores)))
+    return int(parent_a), int(parent_b), victim
+
+
 class LocalWorld:
     """One subpopulation of 8 individuals. Owns the day's trial/scoring
     loop and local (non-festival) reproduction. Global-level concerns
@@ -126,9 +143,6 @@ class LocalWorld:
         """Rank by score; two parents chosen uniformly from the top half;
         one offspring via crossover; one of the 8 killed uniformly at
         random and replaced (Section 2.1)."""
-        ranked = np.argsort(-scores)  # best first
-        top_half = ranked[:4]
-        parent_a, parent_b = self.rng.choice(top_half, size=2, replace=True)
+        parent_a, parent_b, dead = select_parents_and_victim(scores, top_k=N_INDIVIDUALS // 2, rng=self.rng)
         child_genome = crossover(self.individuals[parent_a].genome, self.individuals[parent_b].genome, self.rng)
-        dead = int(self.rng.integers(0, N_INDIVIDUALS))
         self.individuals[dead] = Individual(genome=child_genome)

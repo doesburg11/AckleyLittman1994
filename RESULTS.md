@@ -57,9 +57,71 @@ replacement per day.
   the final position) -- consistent with the -696 validation, which
   exercises exactly this combination logic across all 9 stimulus pairs.
 
-## Not yet built or validated
+## Global level (Section 2.3) — implemented and validated (2026-08-27)
 
-Everything at the "global level" (Section 2.3): the population grid, wind
-migration, and festival migration/reproduction with phase-shifted quads.
-No comparative run (their Case 1/2/3 wind-only / wind+festival /
-strictly-festival designs) has been attempted at any scale yet.
+31/31 tests passing (25 local-level + 6 new in `test_grid.py`), plus a
+small-scale smoke run.
+
+**Grid, wind, festival** (`altruism/grid.py`): a torus grid of
+`LocalWorld` subpopulations (`GridWorld`), with wind migration and
+festival migration/reproduction layered on top of the existing local
+day/scoring/reproduction cycle -- festival replaces local reproduction
+for cells in a festival quad that day; wind is additive, applied after
+reproduction; if a day is both windy and a festival day, festival runs
+first, then wind (per the paper, p.43).
+
+**Wind migration** validated two ways: (1) a forced-direction,
+forced-emigrant-index test confirms the individual that leaves cell
+(r, c) lands in *exactly* the slot vacated by its destination cell's own
+emigrant, and every other slot is untouched -- checked by object
+identity, not just genome content, on a 4×4 torus (covers wraparound at
+every edge for free). (2) a real-RNG test confirms wind migration is a
+pure permutation of the population -- same set of individual objects
+before and after, every cell still exactly 8 strong.
+
+**Festival quad phase-shifting** validated combinatorially: for a fixed
+cell on an 8×8 torus, the union of its quad-partners across all 4
+Margolus phase offsets is checked to equal exactly its 8 Moore
+neighbors -- the property the paper states ("after four festivals, any
+given cell will have interacted with all eight of its neighbors") is
+asserted directly, not just run and eyeballed.
+
+**Festival reproduction** validated with the same all-zero/all-one
+genome trick already used for local reproduction's top-half check
+(`test_local_reproduce_parents_come_from_top_half`), generalized to the
+32-individual quad and its top-quarter (8-of-32) parent pool: across 50
+random trials, exactly one individual in the quad is ever replaced
+(tracked by object identity, since a victim from the top-quarter group
+can be replaced by a content-identical all-zero offspring), and that
+offspring's genome is always all-zero -- never a mix, which would only
+be possible if a parent were drawn from outside the top quarter.
+
+**Small-scale smoke run**: `run_grid_simulation.py --grid-size 8 --days
+200 --wind-period 5 --festival-period 2 --seed 0` completed in ~94s with
+no crashes or NaNs; both the max and mean per-cell-average behavioral
+score climbed steadily from the -696-ish random-founder baseline (day 20:
+max -595.5/mean -689.9) toward less negative values (day 200: max
+-389.5/mean -437.5) -- the same qualitative shape (steady climb from the
+never-moving baseline) the paper's own Figure 2/3 report, though nowhere
+near their reported day-1000-3000 timescale for reaching the -12 to -56
+range, as expected at this tiny 8×8/64-subpopulation scale over only 200
+days.
+
+**Refactor, not new behavior**: `world.py`'s `local_reproduce` now calls
+a shared `select_parents_and_victim(scores, top_k, rng)` helper (same
+rank/select/kill mechanic local reproduction always used, just factored
+out so festival reproduction -- identical mechanic, different pool size
+and top fraction -- doesn't duplicate it). All 25 pre-existing local-level
+tests still pass unchanged, confirming this is behavior-preserving.
+
+## Not yet built or run
+
+- The paper's actual scale (128×128 grid, 131,072 individuals) and its
+  Case 1/2/3 comparative studies (wind-only `wind_period=5`, wind+festival
+  `wind_period=10`/`festival_period=2`, festival-only `festival_period=2`)
+  -- their own runs took "multiples of weeks" of wall-clock time even on a
+  parallel supercomputer; not launched yet, a deliberate scope decision
+  for later, not a limitation of the mechanics.
+- Figure 2/3/4's "sample" scatter series and any movie/plate-style spatial
+  visualization -- the CSV logger currently only records max/mean
+  per-cell-average score per day.

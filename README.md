@@ -42,15 +42,33 @@ A precise, independent validation: a never-moving individual scores
 stated number (p. 43–44) exactly, computed from the score-vector and
 trial-structure implementation with no fitting involved.
 
-**Not yet built** (the paper's Section 2.3, "global level" — the actual
-experimental variable in their case studies):
-- The population grid (their scale: 128×128 subpopulations, 131,072
-  individuals total).
-- Wind migration (periodic, random-direction, one individual per
-  subpopulation).
-- Festival migration/reproduction (periodic 2×2-quad tournaments, with
-  the quad phase shifted across four successive festivals so every cell
-  eventually interacts with all eight of its neighbors).
+**Done and unit-tested** (the paper's Section 2.3, "global level" —
+`altruism/grid.py`):
+- The population grid: a torus of `LocalWorld` subpopulations
+  (`GridWorld`, parameterizable size — the paper's own scale is
+  128×128/131,072 individuals total).
+- Wind migration: one global compass direction per windy day, one random
+  emigrant per subpopulation, each immigrant landing in the exact slot
+  its destination's own emigrant vacated (a simultaneous,
+  population-preserving swap).
+- Festival migration/reproduction: 32-individual quad tournaments (top
+  quarter parents, one random victim replaced), with the quad grouping
+  phase-shifted (Margolus-neighborhood style) across successive festivals
+  so every cell interacts with all eight of its neighbors over 4
+  festivals.
+- A CLI runner (`run_grid_simulation.py`) and a small-scale smoke run
+  (8×8 grid, 200 days, wind+festival both enabled) — completed cleanly,
+  scores trending upward from the -696-ish baseline as expected. See
+  `RESULTS.md`.
+
+**Not yet done**:
+- Launching the paper's actual scale (128×128/131,072 individuals) or its
+  Case 1/2/3 comparative studies (wind-only, wind+festival,
+  festival-only) — each of the paper's own runs took "multiples of
+  weeks" of wall-clock time even on a parallel supercomputer, so this is
+  a deliberate, separate scope decision, not yet made.
+- Any plotting/movie reproduction of Figure 2/3/4's "sample" scatter
+  series.
 
 See `RESULTS.md` for validation details and status as the global level is
 built out.
