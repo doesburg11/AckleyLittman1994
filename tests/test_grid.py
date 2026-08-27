@@ -131,6 +131,38 @@ def test_festival_reproduce_parents_come_from_top_quarter_of_quad(rng):
         assert offspring_bits.sum() == 0, "offspring must be bred from top-quarter (all-zero) parents only"
 
 
+def test_parallel_scoring_matches_serial_given_same_seed():
+    """The per-cell scoring/local-reproduction step is safe to parallelize
+    because each cell's outcome depends only on that cell's own rng
+    stream, never on which worker ran it or what order cells were
+    processed in. A multi-worker run must therefore end up bit-for-bit
+    identical to a single-threaded run given the same seed."""
+
+    def run(n_workers):
+        with GridWorld(seed=3, grid_size=4, wind_period=3, festival_period=2, n_workers=n_workers) as world:
+            for _ in range(20):
+                world.run_day()
+            return [
+                world.cells[r][c].individuals[slot].genome.bits.copy()
+                for r in range(world.grid_size)
+                for c in range(world.grid_size)
+                for slot in range(N_INDIVIDUALS)
+            ]
+
+    serial_result = run(n_workers=None)
+    parallel_result = run(n_workers=2)
+
+    for serial_bits, parallel_bits in zip(serial_result, parallel_result):
+        assert np.array_equal(serial_bits, parallel_bits)
+
+
+def test_grid_world_context_manager_shuts_down_executor():
+    with GridWorld(seed=0, grid_size=4, n_workers=2) as world:
+        world.run_day()
+        assert world._executor is not None
+    assert world._executor is None
+
+
 def test_end_to_end_small_grid_run_is_reproducible_and_conserves_population():
     def run(seed):
         world = GridWorld(seed=seed, grid_size=4, wind_period=3, festival_period=2)

@@ -6,6 +6,7 @@ the paper's own Figure 2/3/4 plot.
 
 import argparse
 import csv
+import os
 from pathlib import Path
 
 from altruism.grid import GRID_SIZE_DEFAULT, GridWorld
@@ -22,20 +23,25 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=1, help="Days between logged CSV rows.")
     parser.add_argument("--out-dir", type=str, default="results")
-    args = parser.parse_args()
-
-    world = GridWorld(
-        seed=args.seed,
-        grid_size=args.grid_size,
-        wind_period=args.wind_period,
-        festival_period=args.festival_period,
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 1,
+        help="Worker processes for per-cell scoring (0 or 1 = single-threaded). Default: all detected CPUs.",
     )
+    args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"grid_seed{args.seed}_size{args.grid_size}.csv"
 
-    with open(out_path, "w", newline="") as f:
+    with GridWorld(
+        seed=args.seed,
+        grid_size=args.grid_size,
+        wind_period=args.wind_period,
+        festival_period=args.festival_period,
+        n_workers=args.workers if args.workers > 1 else None,
+    ) as world, open(out_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["day", "max_cell_avg_score", "mean_cell_avg_score"])
 

@@ -3,6 +3,8 @@ migration and festival migration/reproduction layered on top of the local
 level's day/scoring/reproduction cycle (world.py).
 """
 
+from concurrent.futures import ProcessPoolExecutor
+
 import numpy as np
 
 from altruism.genome import crossover
@@ -23,6 +25,28 @@ COMPASS_OFFSETS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (
 PHASE_OFFSETS = [(0, 0), (0, 1), (1, 0), (1, 1)]
 
 
+def _score_chunk(local_worlds: list[LocalWorld], do_local_reproduce: bool):
+    """Worker-process entry point: runs each cell's day (and, unless a
+    festival is about to override it, its local reproduction) in
+    isolation. Each LocalWorld carries its own independent rng stream, so
+    a cell's result depends only on that cell -- never on which worker
+    ran it or what order cells within a chunk were processed in, which is
+    what makes this safe to parallelize without changing the outcome."""
+    scores = []
+    for local_world in local_worlds:
+        day_scores = local_world.run_day()
+        if do_local_reproduce:
+            local_world.local_reproduce(day_scores)
+        scores.append(day_scores)
+    return local_worlds, scores
+
+
+def _chunk(items: list, n: int) -> list[list]:
+    n = max(1, n)
+    size = -(-len(items) // n)  # ceil division
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
 class GridWorld:
     """A grid_size x grid_size torus of LocalWorld subpopulations. Runs
     the day cycle for every cell, then applies festival reproduction
@@ -32,6 +56,17 @@ class GridWorld:
     `wind_period` / `festival_period` of None means that mechanism never
     fires; an integer period p means it fires when `day % p == 0` (day
     counting starts at 1, so period 5 fires on days 5, 10, 15, ...).
+
+    `n_workers`, if given as an int > 1, runs each day's per-cell scoring
+    (and local reproduction) across a persistent pool of that many worker
+    processes instead of a single-threaded loop -- the dominant cost by
+    far (the 36-trial scoring loop), and the one part of the day cycle
+    that's embarrassingly parallel per-cell. Festival and wind stay
+    single-threaded in the main process: they're cheap by comparison and
+    need cross-cell coordination (a festival quad spans 4 cells; wind is
+    one global, simultaneous swap), so parallelizing them would add real
+    complexity for negligible time saved. Close the pool with `close()`
+    or use `GridWorld(...) as world:` when done.
     """
 
     def __init__(
@@ -40,6 +75,7 @@ class GridWorld:
         grid_size: int = GRID_SIZE_DEFAULT,
         wind_period: int | None = None,
         festival_period: int | None = None,
+        n_workers: int | None = None,
     ):
         assert grid_size % 2 == 0, "grid_size must be even (2x2 quads must tile it exactly)"
         self.grid_size = grid_size
@@ -47,6 +83,8 @@ class GridWorld:
         self.festival_period = festival_period
         self.day = 0
         self._festival_phase = 0
+        self._n_workers = n_workers
+        self._executor = ProcessPoolExecutor(max_workers=n_workers) if n_workers and n_workers > 1 else None
 
         # One independent child RNG stream per cell (for that cell's own
         # trial/local-reproduction randomness) plus one more for the grid
@@ -65,30 +103,65 @@ class GridWorld:
         ]
 
     def run_day(self) -> np.ndarray:
-        """Runs one full day: every cell's 36-trial scoring, then
-        reproduction (festival replaces local reproduction on a festival
-        day), then wind migration on a windy day. Returns today's scores,
-        shape (grid_size, grid_size, N_INDIVIDUALS)."""
+        """Runs one full day: every cell's 36-trial scoring (plus local
+        reproduction, unless today is a festival day for that cell),
+        then festival reproduction if today is a festival day, then wind
+        migration if today is a windy day. Returns today's scores, shape
+        (grid_size, grid_size, N_INDIVIDUALS)."""
         self.day += 1
-        scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
-        for row in range(self.grid_size):
-            for col in range(self.grid_size):
-                scores[row, col] = self.cells[row][col].run_day()
-
         is_festival = self.festival_period is not None and self.day % self.festival_period == 0
         is_windy = self.wind_period is not None and self.day % self.wind_period == 0
 
+        if self._executor is not None:
+            scores = self._run_scoring_parallel(do_local_reproduce=not is_festival)
+        else:
+            scores = self._run_scoring_serial(do_local_reproduce=not is_festival)
+
         if is_festival:
             self._run_festival(scores)
-        else:
-            for row in range(self.grid_size):
-                for col in range(self.grid_size):
-                    self.cells[row][col].local_reproduce(scores[row, col])
-
         if is_windy:
             self._run_wind()
 
         return scores
+
+    def _run_scoring_serial(self, do_local_reproduce: bool) -> np.ndarray:
+        scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
+        for row in range(self.grid_size):
+            for col in range(self.grid_size):
+                cell = self.cells[row][col]
+                scores[row, col] = cell.run_day()
+                if do_local_reproduce:
+                    cell.local_reproduce(scores[row, col])
+        return scores
+
+    def _run_scoring_parallel(self, do_local_reproduce: bool) -> np.ndarray:
+        flat_cells = [self.cells[row][col] for row in range(self.grid_size) for col in range(self.grid_size)]
+        chunks = _chunk(flat_cells, self._n_workers)
+        futures = [self._executor.submit(_score_chunk, chunk, do_local_reproduce) for chunk in chunks]
+
+        scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
+        flat_index = 0
+        for future in futures:
+            updated_cells, chunk_scores = future.result()
+            for local_world, day_scores in zip(updated_cells, chunk_scores):
+                row, col = divmod(flat_index, self.grid_size)
+                self.cells[row][col] = local_world
+                scores[row, col] = day_scores
+                flat_index += 1
+        return scores
+
+    def close(self):
+        """Shuts down the worker pool, if one was created. Safe to call
+        even when n_workers was never set (a no-op)."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = None
+
+    def __enter__(self) -> "GridWorld":
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
 
     def _run_wind(self):
         """One global wind direction; independently in every cell, one
