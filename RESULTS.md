@@ -114,14 +114,75 @@ out so festival reproduction -- identical mechanic, different pool size
 and top fraction -- doesn't duplicate it). All 25 pre-existing local-level
 tests still pass unchanged, confirming this is behavior-preserving.
 
-## Not yet built or run
+## Parallelized per-cell scoring (2026-08-27)
 
-- The paper's actual scale (128×128 grid, 131,072 individuals) and its
-  Case 1/2/3 comparative studies (wind-only `wind_period=5`, wind+festival
-  `wind_period=10`/`festival_period=2`, festival-only `festival_period=2`)
-  -- their own runs took "multiples of weeks" of wall-clock time even on a
-  parallel supercomputer; not launched yet, a deliberate scope decision
-  for later, not a limitation of the mechanics.
+Since a full-scale day is dominated by 16,384 cells' worth of independent
+36-trial scoring, `GridWorld(..., n_workers=N)` dispatches that step (and
+local reproduction, unless the day is a festival day) across a persistent
+`ProcessPoolExecutor`; festival and wind stay single-threaded, since
+they're cheap by comparison and need cross-cell coordination a per-cell
+worker can't provide. Correctness holds by construction, not just by
+testing it: every cell owns its own independent rng stream, so a cell's
+result never depends on which worker ran it or in what order -- verified
+by a new test asserting a serial run and a 2-worker run land on
+bit-identical genomes given the same seed. Benchmarked on a 32×32 grid,
+20 days: 32 workers cut wall-clock from 2m31s to 19.5s (7.7x), with
+byte-identical output confirming parallelization changed nothing about
+the result. 33/33 tests passing.
+
+## Case 1 (wind-only), full paper scale — launched 2026-08-27, in progress
+
+Launched at the paper's own Case 1 configuration: `--grid-size 128
+--wind-period 5 --days 13110 --seed 0 --workers 30`, run detached
+(nohup+disowned) so it survives independent of any terminal session.
+Measured throughput has held steady at ~18-19s/day the entire run
+(~30 of 32 cores in use, bursty rather than pegged, due to the daily
+IPC round-trip) -- full run estimated at ~2.7 days wall-clock.
+
+**Max and mean per-cell-average score over the run so far** (sampled
+every 500 days):
+
+| day | max | mean |
+|---|---|---|
+| 1 | -650.9 | -701.9 |
+| 500 | 42.0 | -283.0 |
+| 1,000 | 45.0 | -96.1 |
+| 1,500 | 63.25 | -63.8 |
+| 2,000 | 58.0 | -43.9 |
+| 3,000 | 58.0 | -20.5 |
+| 4,000 | 58.0 | -19.3 |
+| 5,000 | 58.0 | -19.3 |
+| 6,000 | 58.0 | -18.3 |
+| 6,500 | 58.0 | -17.7 |
+| 7,500 | 58.0 | -19.3 |
+| 8,500 | 58.0 | -19.8 |
+| 9,000 | 24.5 | -18.7 |
+| 10,000 | 24.0 | -19.8 |
+| 10,500 | 24.5 | -20.1 |
+
+Two things worth flagging while the run is still in progress, not as a
+final result: (1) a single communicating cluster scoring 58 held on for
+roughly 6,500 straight days (day 2,000 to 8,500) before being invaded and
+displaced -- between day 8,500 and 9,000 the max collapsed to 24.5 and
+nothing comparably good has re-emerged since, a plausible live instance
+of the exact wind-only dynamic the paper describes (a communicating
+cluster can hold substantial territory for a long stretch, but has no
+guarantee of holding it indefinitely once wind keeps mixing communication
+range away from breeding range). (2) The population-wide *mean* barely
+moved through that whole rise-and-fall (-17.7 to -20.1) -- expected, since
+one 58-scoring cluster was always a tiny fraction of 16,384 subpopulations,
+matching the paper's own finding that communicators never dominate the
+array under wind-only migration. Read as consistent with the paper's
+described dynamics so far, not as a bug -- the full picture (including
+whatever the spatial trace looks like) isn't in until the run completes.
+
+## Not yet run
+
+- The paper's Case 2 (wind+festival, `wind_period=10`/`festival_period=2`,
+  14,580 days) and Case 3 (festival-only, `festival_period=2`, 99,980
+  days) -- not launched yet, pending Case 1's outcome and a decision on
+  wall-clock budget (Case 3 alone is ~99,980 days; even parallelized,
+  a meaningfully longer commitment than Case 1).
 - Figure 2/3/4's "sample" scatter series and any movie/plate-style spatial
   visualization -- the CSV logger currently only records max/mean
   per-cell-average score per day.
