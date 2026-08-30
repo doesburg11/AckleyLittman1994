@@ -45,6 +45,16 @@ def _score_vector(left_stim: str | None, right_stim: str | None) -> np.ndarray:
 @dataclass
 class Individual:
     genome: Genome
+    # A single-parent-inheritance ancestry label (like mitochondrial
+    # descent) -- independent of the genome's actual bytes, so it tracks
+    # *lineage* rather than exact genetic content. Founders each get a
+    # globally unique id (assigned by GridWorld); an offspring inherits
+    # parent_a's id unchanged. This is what lets a snapshot distinguish
+    # "the same clone held this territory" from "an unrelated clone
+    # independently reached the same score" -- something score alone,
+    # or an exact-genome registry (which crossover would make look like
+    # constant churn even for a stable strategy), can't do. -1 = unset.
+    lineage_id: int = -1
     network: Network = field(default=None)
 
     def __post_init__(self):
@@ -105,36 +115,57 @@ class LocalWorld:
         # tracked separately. Both refreshed fresh by every run_day().
         self.last_day_speech_by_stimulus = np.zeros((N_INDIVIDUALS, N_STIM_PAIRS))
         self.last_day_speech_activity = np.zeros(N_INDIVIDUALS)
+        # Counts, per individual per stimulus pair, of (heard-something &
+        # moved, heard-something & stayed, heard-nothing & moved,
+        # heard-nothing & stayed) across that pair's 4 reps -- "heard
+        # something" is a per-trial, not per-individual, fact (hearing is
+        # subpopulation-wide -- see _run_trial), so this tests whether an
+        # individual's own movement is actually contingent on what the
+        # subpopulation heard, the specific "cautious communicator" claim
+        # (relies on hearing only in some situations, not others), rather
+        # than just how much a cell talks.
+        self.last_day_hearing_response = np.zeros((N_INDIVIDUALS, N_STIM_PAIRS, 4))
 
     def run_day(self) -> np.ndarray:
         """Runs the day's 36 trials (all 9 stimulus combinations x 4 reps
         each) and returns each individual's total behavioral score for
         the day, in track order. Also refreshes
-        `last_day_speech_by_stimulus` and `last_day_speech_activity` as a
-        side effect."""
+        `last_day_speech_by_stimulus`, `last_day_speech_activity`, and
+        `last_day_hearing_response` as a side effect."""
         scores = np.zeros(N_INDIVIDUALS)
         speech_by_stimulus = np.zeros((N_INDIVIDUALS, N_STIM_PAIRS))
+        hearing_response = np.zeros((N_INDIVIDUALS, N_STIM_PAIRS, 4))
         for stim_idx, (left_stim, right_stim) in enumerate(STIM_PAIRS):
             loc_by_rep = _latin_square_locations(self.rng)
             for rep in range(4):
                 scores += self._run_trial(
-                    left_stim, right_stim, loc_by_rep[rep], speech_by_stimulus[:, stim_idx]
+                    left_stim, right_stim, loc_by_rep[rep],
+                    speech_by_stimulus[:, stim_idx], hearing_response[:, stim_idx, :],
                 )
         self.last_day_speech_by_stimulus = speech_by_stimulus
         self.last_day_speech_activity = speech_by_stimulus.sum(axis=1)
+        self.last_day_hearing_response = hearing_response
         return scores
 
     def _run_trial(
-        self, left_stim, right_stim, start_locations: list[int], speech_activity: np.ndarray
+        self,
+        left_stim,
+        right_stim,
+        start_locations: list[int],
+        speech_activity: np.ndarray,
+        hearing_response: np.ndarray,
     ) -> np.ndarray:
         for ind in self.individuals:
             ind.network.reset_trial(ind.genome)
         positions = list(start_locations)
         trial_scores = np.zeros(N_INDIVIDUALS)
         prev_speech = np.zeros((N_INDIVIDUALS, 6), dtype=np.int16)  # all zero on first step
+        heard_anything = False  # per-trial, not per-individual: hearing is subpopulation-wide
+        moved_at_least_once = [False] * N_INDIVIDUALS  # a movement *response*, not net displacement
 
         for _step in range(N_STEPS_PER_TRIAL):
             hearing = prev_speech.sum(axis=0)  # subpopulation-wide, non-localized
+            heard_anything = heard_anything or bool(hearing.any())
             this_step_speech = np.zeros((N_INDIVIDUALS, 6), dtype=np.int16)
             for i, ind in enumerate(self.individuals):
                 loc_name = LOCATIONS[positions[i]]
@@ -148,10 +179,19 @@ class LocalWorld:
                 this_step_speech[i] = ind.network.speech
                 speech_activity[i] += int(this_step_speech[i].sum())
                 if ind.network.move:
+                    moved_at_least_once[i] = True
                     trial_scores[i] -= MOVE_COST
                     positions[i] += 1 if ind.network.to_r else -1
                     positions[i] = max(0, min(3, positions[i]))
             prev_speech = this_step_speech
+
+        for i in range(N_INDIVIDUALS):
+            # a movement *response* -- attempted at least once during the
+            # trial -- not net displacement, which would miss an
+            # out-and-back oscillation or a move that hit the boundary
+            # clamp and landed back where it started.
+            bucket = (0 if heard_anything else 2) + (0 if moved_at_least_once[i] else 1)
+            hearing_response[i, bucket] += 1
 
         vector = _score_vector(left_stim, right_stim)
         for i in range(N_INDIVIDUALS):
@@ -161,7 +201,8 @@ class LocalWorld:
     def local_reproduce(self, scores: np.ndarray):
         """Rank by score; two parents chosen uniformly from the top half;
         one offspring via crossover; one of the 8 killed uniformly at
-        random and replaced (Section 2.1)."""
+        random and replaced (Section 2.1). The offspring inherits
+        parent_a's lineage_id unchanged (see Individual.lineage_id)."""
         parent_a, parent_b, dead = select_parents_and_victim(scores, top_k=N_INDIVIDUALS // 2, rng=self.rng)
         child_genome = crossover(self.individuals[parent_a].genome, self.individuals[parent_b].genome, self.rng)
-        self.individuals[dead] = Individual(genome=child_genome)
+        self.individuals[dead] = Individual(genome=child_genome, lineage_id=self.individuals[parent_a].lineage_id)

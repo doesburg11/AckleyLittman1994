@@ -148,3 +148,50 @@ def test_always_speaking_individual_has_exact_speech_per_stimulus(rng):
     assert np.array_equal(world.last_day_speech_by_stimulus[0], np.full(N_STIM_PAIRS, expected_per_stimulus))
     assert np.allclose(world.last_day_speech_by_stimulus[1:], 0.0)
     assert world.last_day_speech_by_stimulus[0].sum() == world.last_day_speech_activity[0]
+
+
+def test_local_reproduce_offspring_inherits_parent_a_not_parent_b_lineage_id(rng, monkeypatch):
+    """Pins exact parent_a/parent_b/victim indices by monkeypatching
+    select_parents_and_victim (a plain function, unlike the numpy
+    Generator calls elsewhere in this file, which can't be
+    monkeypatched), so inheritance is checked unambiguously: the
+    offspring must carry parent_a's lineage_id specifically -- inheriting
+    parent_b's instead would also pass a weaker "came from the top half"
+    check, which is why this pins both parents to distinct known ids."""
+    individuals = [
+        Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8)), lineage_id=1000 + i)
+        for i in range(N_INDIVIDUALS)
+    ]
+    world = LocalWorld(rng, individuals=individuals)
+    monkeypatch.setattr("altruism.world.select_parents_and_victim", lambda *a, **k: (2, 5, 3))
+
+    world.local_reproduce(np.zeros(N_INDIVIDUALS))  # scores unused by the patched selector
+
+    assert world.individuals[3].lineage_id == 1002, "offspring must inherit parent_a's (index 2) lineage_id"
+
+
+def test_never_moving_individuals_are_always_unheard_and_stayed(rng):
+    """No connections at all means no speech and no movement, so hearing
+    is zero at every step of every trial: every individual's
+    hearing_response must show exactly 4 (the day's 4 reps) in the
+    'heard-nothing & stayed' bucket (index 3) for every one of the 9
+    stimulus pairs, and 0 everywhere else -- an exact check."""
+    world = LocalWorld(rng, individuals=[_never_moving_individual() for _ in range(N_INDIVIDUALS)])
+    world.run_day()
+    assert world.last_day_hearing_response.shape == (N_INDIVIDUALS, N_STIM_PAIRS, 4)
+    assert np.all(world.last_day_hearing_response[:, :, 3] == 4)
+    assert np.all(world.last_day_hearing_response[:, :, :3] == 0)
+
+
+def test_always_speaking_individual_makes_whole_cell_heard_and_stayed(rng):
+    """One always-speaking individual (which itself never moves -- its
+    one connection only ever drives a speech channel) among never-movers:
+    hearing is subpopulation-wide, so from the trial's second step
+    onward every individual (including the speaker) hears something, but
+    nobody ever moves. Every individual's hearing_response must land
+    entirely in the 'heard-something & stayed' bucket (index 1)."""
+    individuals = [_always_speaking_individual()] + [_never_moving_individual() for _ in range(N_INDIVIDUALS - 1)]
+    world = LocalWorld(rng, individuals=individuals)
+    world.run_day()
+    assert np.all(world.last_day_hearing_response[:, :, 1] == 4)
+    assert np.all(world.last_day_hearing_response[:, :, [0, 2, 3]] == 0)

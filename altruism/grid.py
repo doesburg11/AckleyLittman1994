@@ -3,6 +3,7 @@ migration and festival migration/reproduction layered on top of the local
 level's day/scoring/reproduction cycle (world.py).
 """
 
+import itertools
 import os
 import pickle
 from collections import Counter
@@ -10,7 +11,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-from altruism.genome import crossover
+from altruism.genome import GENOME_BITS, crossover
 from altruism.world import Individual, LocalWorld, N_INDIVIDUALS, N_STIM_PAIRS, select_parents_and_victim
 
 N_SAMPLE_CELLS = 8
@@ -30,16 +31,66 @@ COMPASS_OFFSETS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (
 PHASE_OFFSETS = [(0, 0), (0, 1), (1, 0), (1, 1)]
 
 
-def _cell_purity(local_world: LocalWorld) -> float:
-    """The largest group of a cell's 8 individuals sharing bit-identical
-    genomes, divided by 8. Must be computed before local_reproduce (or
-    festival/wind) touches the cell, so it describes the same population
-    whose behavior just produced that day's score -- not tomorrow's."""
-    genome_bytes = [ind.genome.bits.tobytes() for ind in local_world.individuals]
-    return max(Counter(genome_bytes).values()) / N_INDIVIDUALS
+def _cell_stats(local_world: LocalWorld) -> dict:
+    """Everything about a cell's current population a snapshot needs,
+    computed together from one pass over its 8 individuals -- must be
+    called before local_reproduce (or festival/wind) touches the cell,
+    so it describes the same population whose behavior just produced
+    that day's score, not tomorrow's.
+
+    - `purity`: the largest group sharing bit-identical genomes, / 8.
+    - `dominant_lineage_id` / `lineage_purity`: the same idea, but
+      grouped by ancestry (Individual.lineage_id, inherited across
+      reproduction independent of the genome's actual bytes) instead of
+      exact genome bytes -- this is what distinguishes "the same lineage
+      held this territory" from "an unrelated lineage independently
+      reached the same score," which purity/score alone can't (an exact-
+      genome registry was considered and rejected for this same purpose
+      -- see RESULTS.md -- because crossover makes exact-byte identity
+      the wrong signal for a persisting *strategy*; ancestry is not).
+    - `dominant_genome`: the modal genome's own bits -- lets
+      analyze_snapshot.py measure genetic distance across a border, not
+      just a score gap (the paper's mixing-zone claim is about
+      incompatible crosses, not merely differing scores).
+    """
+    genomes = [ind.genome.bits for ind in local_world.individuals]
+    genome_bytes = [g.tobytes() for g in genomes]
+    dominant_bytes, dominant_count = Counter(genome_bytes).most_common(1)[0]
+    dominant_genome = next(g for g, b in zip(genomes, genome_bytes) if b == dominant_bytes)
+
+    lineage_ids = [ind.lineage_id for ind in local_world.individuals]
+    dominant_lineage_id, dominant_lineage_count = Counter(lineage_ids).most_common(1)[0]
+
+    return {
+        "purity": dominant_count / N_INDIVIDUALS,
+        "dominant_lineage_id": dominant_lineage_id,
+        "lineage_purity": dominant_lineage_count / N_INDIVIDUALS,
+        "dominant_genome": dominant_genome.copy(),
+    }
 
 
-def _score_chunk(local_worlds: list[LocalWorld], do_local_reproduce: bool, want_purity: bool):
+def _empty_stats(grid_size: int) -> dict:
+    """Pre-allocated grid-shaped arrays for a snapshot's per-cell stats
+    (see _cell_stats) plus hearing-response -- built once per snapshot
+    day, filled in by _fill_stats as each cell's result comes in."""
+    return {
+        "purity": np.empty((grid_size, grid_size)),
+        "dominant_lineage_id": np.empty((grid_size, grid_size), dtype=np.int64),
+        "lineage_purity": np.empty((grid_size, grid_size)),
+        "dominant_genome": np.empty((grid_size, grid_size, GENOME_BITS), dtype=np.uint8),
+        "hearing_response": np.empty((grid_size, grid_size, N_INDIVIDUALS, N_STIM_PAIRS, 4)),
+    }
+
+
+def _fill_stats(stats: dict, row: int, col: int, cell_stats: dict, hearing_response: np.ndarray):
+    stats["purity"][row, col] = cell_stats["purity"]
+    stats["dominant_lineage_id"][row, col] = cell_stats["dominant_lineage_id"]
+    stats["lineage_purity"][row, col] = cell_stats["lineage_purity"]
+    stats["dominant_genome"][row, col] = cell_stats["dominant_genome"]
+    stats["hearing_response"][row, col] = hearing_response
+
+
+def _score_chunk(local_worlds: list[LocalWorld], do_local_reproduce: bool, want_stats: bool):
     """Worker-process entry point: runs each cell's day (and, unless a
     festival is about to override it, its local reproduction) in
     isolation. Each LocalWorld carries its own independent rng stream, so
@@ -47,15 +98,15 @@ def _score_chunk(local_worlds: list[LocalWorld], do_local_reproduce: bool, want_
     ran it or what order cells within a chunk were processed in, which is
     what makes this safe to parallelize without changing the outcome."""
     scores = []
-    purities = []
+    stats = []
     for local_world in local_worlds:
         day_scores = local_world.run_day()
-        if want_purity:
-            purities.append(_cell_purity(local_world))
+        if want_stats:
+            stats.append(_cell_stats(local_world))
         if do_local_reproduce:
             local_world.local_reproduce(day_scores)
         scores.append(day_scores)
-    return local_worlds, scores, purities
+    return local_worlds, scores, stats
 
 
 def _chunk(items: list, n: int) -> list[list]:
@@ -104,7 +155,17 @@ class GridWorld:
         self._executor = ProcessPoolExecutor(max_workers=n_workers) if n_workers and n_workers > 1 else None
         self.last_day_speech = np.zeros((grid_size, grid_size, N_INDIVIDUALS))
         self.last_day_speech_by_stimulus = np.zeros((grid_size, grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
+        self.last_day_hearing_response = np.zeros((grid_size, grid_size, N_INDIVIDUALS, N_STIM_PAIRS, 4))
         self.last_day_purity: np.ndarray | None = None
+        self.last_day_dominant_lineage_id: np.ndarray | None = None
+        self.last_day_lineage_purity: np.ndarray | None = None
+        self.last_day_dominant_genome: np.ndarray | None = None
+        # The day these snapshot-only stats were actually computed for --
+        # not just whether they were *ever* computed. Without this, a
+        # want_snapshot=True day followed by a want_snapshot=False day
+        # would let snapshot() silently pair the new day's scores with
+        # the previous day's (now stale) purity/lineage/genome data.
+        self._snapshot_day: int | None = None
 
         # One independent child RNG stream per cell (for that cell's own
         # trial/local-reproduction randomness), one for the grid's own
@@ -127,6 +188,17 @@ class GridWorld:
             for row in range(grid_size)
         ]
 
+        # Every founder gets a globally unique lineage_id (see
+        # Individual.lineage_id) -- offspring inherit one unchanged at
+        # reproduction time, so a snapshot can later tell whether the
+        # same ancestral line still holds a cell, or a different one
+        # (independently reaching the same score) has taken over.
+        lineage_counter = itertools.count()
+        for row in self.cells:
+            for cell in row:
+                for ind in cell.individuals:
+                    ind.lineage_id = next(lineage_counter)
+
         # A fixed set of randomly-chosen subpopulations to track over the
         # whole run (the paper's own Figure 2/3/4 "sample" scatter series)
         # -- drawn once here, from the instrumentation rng (never the
@@ -147,31 +219,38 @@ class GridWorld:
         cell's speech-activity totals, a cheap communication-activity
         proxy, collected as a side effect of scoring.
 
-        `want_snapshot=True` additionally computes `last_day_purity`
-        (grid_size, grid_size) -- required before calling `snapshot()`.
-        Purity is computed *during* the scoring pass, before that cell's
-        own local_reproduce (or any later festival/wind) touches it, so
-        it always describes the same population whose behavior just
-        produced this day's score -- not the population reproduction/
-        migration leaves behind afterward. Skipped by default since it
-        costs a per-individual genome comparison across every cell, not
-        worth paying on days nothing will read it."""
+        `want_snapshot=True` additionally computes `last_day_purity`,
+        `last_day_dominant_lineage_id`, `last_day_lineage_purity`,
+        `last_day_dominant_genome`, and `last_day_hearing_response`
+        (each `(grid_size, grid_size, ...)`) -- required before calling
+        `snapshot()`. All computed *during* the scoring pass, before
+        that cell's own local_reproduce (or any later festival/wind)
+        touches it, so they always describe the same population whose
+        behavior just produced this day's score -- not the population
+        reproduction/migration leaves behind afterward. Skipped by
+        default since collecting them at full 128x128 scale isn't cheap,
+        and not worth paying on days nothing will read them."""
         self.day += 1
         is_festival = self.festival_period is not None and self.day % self.festival_period == 0
         is_windy = self.wind_period is not None and self.day % self.wind_period == 0
 
         if self._executor is not None:
-            scores, speech, speech_by_stim, purity = self._run_scoring_parallel(
-                do_local_reproduce=not is_festival, want_purity=want_snapshot
+            scores, speech, speech_by_stim, stats = self._run_scoring_parallel(
+                do_local_reproduce=not is_festival, want_stats=want_snapshot
             )
         else:
-            scores, speech, speech_by_stim, purity = self._run_scoring_serial(
-                do_local_reproduce=not is_festival, want_purity=want_snapshot
+            scores, speech, speech_by_stim, stats = self._run_scoring_serial(
+                do_local_reproduce=not is_festival, want_stats=want_snapshot
             )
         self.last_day_speech = speech
         self.last_day_speech_by_stimulus = speech_by_stim
         if want_snapshot:
-            self.last_day_purity = purity
+            self.last_day_purity = stats["purity"]
+            self.last_day_dominant_lineage_id = stats["dominant_lineage_id"]
+            self.last_day_lineage_purity = stats["lineage_purity"]
+            self.last_day_dominant_genome = stats["dominant_genome"]
+            self.last_day_hearing_response = stats["hearing_response"]
+            self._snapshot_day = self.day
 
         if is_festival:
             self._run_festival(scores)
@@ -180,60 +259,57 @@ class GridWorld:
 
         return scores
 
-    def _run_scoring_serial(
-        self, do_local_reproduce: bool, want_purity: bool
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    def _run_scoring_serial(self, do_local_reproduce: bool, want_stats: bool) -> tuple:
         scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech_by_stim = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
-        purity = np.empty((self.grid_size, self.grid_size)) if want_purity else None
+        stats = _empty_stats(self.grid_size) if want_stats else None
         for row in range(self.grid_size):
             for col in range(self.grid_size):
                 cell = self.cells[row][col]
                 scores[row, col] = cell.run_day()
                 speech[row, col] = cell.last_day_speech_activity
                 speech_by_stim[row, col] = cell.last_day_speech_by_stimulus
-                if want_purity:
-                    purity[row, col] = _cell_purity(cell)
+                if want_stats:
+                    _fill_stats(stats, row, col, _cell_stats(cell), cell.last_day_hearing_response)
                 if do_local_reproduce:
                     cell.local_reproduce(scores[row, col])
-        return scores, speech, speech_by_stim, purity
+        return scores, speech, speech_by_stim, stats
 
-    def _run_scoring_parallel(
-        self, do_local_reproduce: bool, want_purity: bool
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    def _run_scoring_parallel(self, do_local_reproduce: bool, want_stats: bool) -> tuple:
         flat_cells = [self.cells[row][col] for row in range(self.grid_size) for col in range(self.grid_size)]
         chunks = _chunk(flat_cells, self._n_workers)
         futures = [
-            self._executor.submit(_score_chunk, chunk, do_local_reproduce, want_purity) for chunk in chunks
+            self._executor.submit(_score_chunk, chunk, do_local_reproduce, want_stats) for chunk in chunks
         ]
 
         scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech_by_stim = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
-        purity = np.empty((self.grid_size, self.grid_size)) if want_purity else None
+        stats = _empty_stats(self.grid_size) if want_stats else None
         flat_index = 0
         for future in futures:
-            updated_cells, chunk_scores, chunk_purities = future.result()
+            updated_cells, chunk_scores, chunk_stats = future.result()
             for i, (local_world, day_scores) in enumerate(zip(updated_cells, chunk_scores)):
                 row, col = divmod(flat_index, self.grid_size)
                 self.cells[row][col] = local_world
                 scores[row, col] = day_scores
                 speech[row, col] = local_world.last_day_speech_activity
                 speech_by_stim[row, col] = local_world.last_day_speech_by_stimulus
-                if want_purity:
-                    purity[row, col] = chunk_purities[i]
+                if want_stats:
+                    _fill_stats(stats, row, col, chunk_stats[i], local_world.last_day_hearing_response)
                 flat_index += 1
-        return scores, speech, speech_by_stim, purity
+        return scores, speech, speech_by_stim, stats
 
     def snapshot(self, scores: np.ndarray) -> dict:
         """A full spatial snapshot for the day `scores` came from -- the
         paper's own "Plates" showed a color-coded map of which clone
         occupies which cell; this is the data behind that. Requires the
         `scores`-producing `run_day()` call to have been made with
-        `want_snapshot=True` (otherwise `last_day_purity` is stale or
+        `want_snapshot=True` (otherwise the per-cell stats are stale or
         absent, and this raises). Not meant to be called every day at
-        full scale -- see run_grid_simulation.py's --snapshot-every.
+        full scale -- see run_grid_simulation.py's --snapshot-every /
+        --snapshot-days.
 
         - `score`: (grid_size, grid_size) that day's per-cell average.
         - `speech_by_stimulus`: (grid_size, grid_size, N_STIM_PAIRS)
@@ -243,19 +319,40 @@ class GridWorld:
         - `purity`: (grid_size, grid_size) -- the largest group of a
           cell's 8 individuals sharing bit-identical genomes, divided by
           8, as of the same pre-reproduction/pre-migration moment
-          `score` describes. 1.0 = fully converged monoculture; low
-          purity flags a recently-contested or border cell
-          (paper-consistent "clone" identity is by behavior/score, not
-          exact genetic lineage -- see RESULTS.md for why an
-          exact-genome registry was rejected).
+          `score` describes. 1.0 = fully converged monoculture.
+        - `dominant_lineage_id` / `lineage_purity`: (grid_size,
+          grid_size) each -- the same idea as purity, but by ancestry
+          (Individual.lineage_id) instead of exact genome bytes. This is
+          what lets two snapshots taken days apart answer "is this the
+          same clone still holding this cell" rather than just "is the
+          score still similar" (score/exact-genome identity alone can't
+          -- see RESULTS.md).
+        - `dominant_genome`: (grid_size, grid_size, 448) -- the modal
+          genome's own bits, for measuring genetic distance across a
+          border (see analyze_snapshot.py) rather than just a score gap.
+        - `hearing_response`: (grid_size, grid_size, N_INDIVIDUALS,
+          N_STIM_PAIRS, 4) -- per individual per stimulus pair, counts
+          of (heard-something & moved, heard-something & stayed,
+          heard-nothing & moved, heard-nothing & stayed) across that
+          pair's 4 daily reps. Tests the paper's specific "cautious
+          communicator" claim (relies on hearing only in some
+          situations) directly, rather than inferring it from how much
+          a cell talks.
         """
-        if self.last_day_purity is None:
-            raise RuntimeError("snapshot() requires the preceding run_day() to have been called with want_snapshot=True")
+        if self._snapshot_day != self.day:
+            raise RuntimeError(
+                "snapshot() requires *this exact* day's run_day() to have been called with "
+                f"want_snapshot=True (stats are from day {self._snapshot_day}, current day is {self.day})"
+            )
         return {
             "day": self.day,
             "score": scores.mean(axis=2),
             "speech_by_stimulus": self.last_day_speech_by_stimulus.mean(axis=2),
             "purity": self.last_day_purity,
+            "dominant_lineage_id": self.last_day_dominant_lineage_id,
+            "lineage_purity": self.last_day_lineage_purity,
+            "dominant_genome": self.last_day_dominant_genome,
+            "hearing_response": self.last_day_hearing_response,
         }
 
     def close(self):
@@ -356,14 +453,17 @@ class GridWorld:
                     quad_scores, top_k=FESTIVAL_TOP_K, rng=self.rng
                 )
 
-                def genome_at(flat_index):
+                def individual_at(flat_index):
                     cell_index, slot = divmod(flat_index, N_INDIVIDUALS)
                     r, c = quad_cells[cell_index]
-                    return self.cells[r][c].individuals[slot].genome
+                    return self.cells[r][c].individuals[slot]
 
-                child_genome = crossover(genome_at(parent_a), genome_at(parent_b), self.rng)
+                parent_a_individual = individual_at(parent_a)
+                child_genome = crossover(parent_a_individual.genome, individual_at(parent_b).genome, self.rng)
                 victim_cell_index, victim_slot = divmod(victim, N_INDIVIDUALS)
                 victim_row, victim_col = quad_cells[victim_cell_index]
-                self.cells[victim_row][victim_col].individuals[victim_slot] = Individual(genome=child_genome)
+                self.cells[victim_row][victim_col].individuals[victim_slot] = Individual(
+                    genome=child_genome, lineage_id=parent_a_individual.lineage_id
+                )
 
         self._festival_phase = (self._festival_phase + 1) % 4

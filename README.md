@@ -66,14 +66,22 @@ trial-structure implementation with no fitting involved.
   cleanly, so a long run can be stopped and resumed (or extended, or
   re-analyzed with a metric added afterward) without restarting from
   day 1. Verified against an uninterrupted reference run: byte-identical.
-- Full metric parity with the paper's own analysis: per-stimulus speech
-  breakdown (distinguishes constant talkers from the paper's "cautious
-  communicators"), periodic spatial snapshots (per-cell score/speech/
-  genetic-purity — the data behind the paper's "Plates"), the paper's
-  own 8-subpopulation sample-scatter series, and `analyze_snapshot.py`
-  for border/mixing-zone analysis. See `RESULTS.md` for why an exact
-  genome-lineage registry was considered and rejected in favor of the
-  paper's own score-based clone convention.
+- Full metric parity with the paper's own analysis, closed in two
+  passes (the second after Codex, given the actual paper text, judged
+  the first pass still partial): per-stimulus speech breakdown and a
+  hearing-response tally (heard-something × moved, per stimulus pair —
+  tests the paper's specific "cautious communicator" claim directly,
+  not just how much a cell talks); periodic spatial snapshots (per-cell
+  score, per-stimulus speech, genetic purity, ancestry-based
+  `lineage_id` tracking — distinguishes "the same clone held this
+  territory" from "an unrelated clone reached the same score," which
+  exact-genome hashing can't, since crossover makes exact genetic
+  identity the wrong signal — and each cell's modal genome); the
+  paper's own 8-subpopulation sample-scatter series; `--snapshot-days`
+  to hit the paper's exact reported Plate days; and `analyze_snapshot.py`
+  for border/mixing-zone genetics and signal-honesty analysis. See
+  `RESULTS.md` for the full gap list and why ancestry (not exact genome
+  bytes) is the right way to track a persisting clone.
 
 **Done and run**: Case 1 (wind-only), the paper's own configuration and
 full 128×128/131,072-individual scale, completed in ~59 hours wall-clock

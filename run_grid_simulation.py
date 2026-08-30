@@ -12,11 +12,17 @@ for a number of days, logging one CSV row per day with:
     afterward for whether high scorers actually communicate more than
     average, and whether they do it constantly or only selectively.
 
-Periodically writes a full spatial snapshot (--snapshot-every) to
-{out-dir}/snapshots/day{day}.npz -- per-cell score, per-cell per-
-stimulus speech, and per-cell genetic purity -- the data behind the
-paper's "Plates" (which clone occupies which cell); see
-analyze_snapshot.py for a border/mixing-zone read on one of these.
+Periodically writes a full spatial snapshot (--snapshot-every, and/or
+on specific days via --snapshot-days -- e.g. to hit the paper's own
+reported Plate days) to {out-dir}/snapshots/day{day}.npz: per-cell
+score, per-stimulus speech, genetic purity, dominant lineage_id +
+lineage purity (does the same ancestral line still hold this cell, not
+just a similar score), dominant genome (for genetic distance across a
+border), and hearing-response counts (does this cell's behavior
+actually change with what it hears, the paper's specific "cautious
+communicator" claim) -- the data behind the paper's "Plates"; see
+analyze_snapshot.py for a border/mixing-zone/signal-honesty read on one
+of these.
 
 Periodically checkpoints the whole GridWorld to disk (--checkpoint-every)
 and always checkpoints once more at the end, whether that's a normal
@@ -72,7 +78,15 @@ def main():
     parser.add_argument(
         "--snapshot-every", type=int, default=0, help="Days between full spatial snapshots; 0 disables them."
     )
+    parser.add_argument(
+        "--snapshot-days",
+        type=str,
+        default="",
+        help="Comma-separated exact days to snapshot in addition to --snapshot-every "
+        "(e.g. to hit the paper's own reported Plate days: '2000,3800,4150,5600').",
+    )
     args = parser.parse_args()
+    snapshot_days = {int(d) for d in args.snapshot_days.split(",") if d.strip()}
 
     def _period_tag(period):
         return "none" if period is None else str(period)
@@ -116,7 +130,7 @@ def main():
         csv_mode = "w"
         print(f"Sample cells (fixed for this run): {world.sample_cells}")
 
-    if args.snapshot_every:
+    if args.snapshot_every or snapshot_days:
         snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     signal.signal(signal.SIGINT, _request_stop)
@@ -137,7 +151,7 @@ def main():
 
         stopped_early = False
         for day in range(world.day + 1, args.days + 1):
-            want_snapshot = bool(args.snapshot_every) and day % args.snapshot_every == 0
+            want_snapshot = (bool(args.snapshot_every) and day % args.snapshot_every == 0) or day in snapshot_days
             scores = world.run_day(want_snapshot=want_snapshot)
             if day % args.log_every == 0 or day == args.days:
                 cell_avg = scores.mean(axis=2)  # (grid_size, grid_size)
@@ -165,6 +179,8 @@ def main():
                     snapshot_dir / f"day{day:06d}.npz",
                     day=snap["day"], score=snap["score"],
                     speech_by_stimulus=snap["speech_by_stimulus"], purity=snap["purity"],
+                    dominant_lineage_id=snap["dominant_lineage_id"], lineage_purity=snap["lineage_purity"],
+                    dominant_genome=snap["dominant_genome"], hearing_response=snap["hearing_response"],
                 )
 
             if day % args.checkpoint_every == 0:

@@ -133,6 +133,33 @@ def test_festival_reproduce_parents_come_from_top_quarter_of_quad(rng):
         assert offspring_bits.sum() == 0, "offspring must be bred from top-quarter (all-zero) parents only"
 
 
+def test_festival_reproduce_offspring_inherits_parent_a_not_parent_b_lineage_id(monkeypatch):
+    """Pins exact parent_a/parent_b/victim flat-indices within the quad
+    by monkeypatching select_parents_and_victim -- patched on
+    altruism.grid specifically, since that's where _run_festival's own
+    `from altruism.world import ... select_parents_and_victim` binding
+    lives (patching altruism.world's copy would not affect it). Checks
+    inheritance unambiguously: the offspring must carry parent_a's
+    lineage_id, never parent_b's -- a weaker "came from the top quarter"
+    check (the previous version of this test) would also pass if
+    parent_b were inherited instead."""
+    grid_size = 2
+    world = GridWorld(seed=0, grid_size=grid_size)
+    quad_cells = world._quad_cells(0, 0, PHASE_OFFSETS[0])
+    for i, (r, c) in enumerate(quad_cells):
+        world.cells[r][c].individuals = [
+            Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8)), lineage_id=3000 + i * N_INDIVIDUALS + slot)
+            for slot in range(N_INDIVIDUALS)
+        ]
+    monkeypatch.setattr("altruism.grid.select_parents_and_victim", lambda *a, **k: (2, 20, 5))
+
+    world._run_festival(np.zeros((grid_size, grid_size, N_INDIVIDUALS)))
+
+    victim_cell_index, victim_slot = divmod(5, N_INDIVIDUALS)
+    r, c = quad_cells[victim_cell_index]
+    assert world.cells[r][c].individuals[victim_slot].lineage_id == 3002, "must inherit parent_a's (flat index 2) lineage_id, not parent_b's (3020)"
+
+
 def test_parallel_scoring_matches_serial_given_same_seed():
     """The per-cell scoring/local-reproduction step is safe to parallelize
     because each cell's outcome depends only on that cell's own rng
@@ -184,6 +211,26 @@ def test_last_day_speech_has_correct_shape_and_matches_serial_vs_parallel():
     parallel_speech, parallel_speech_by_stim = run(n_workers=2)
     assert np.array_equal(serial_speech, parallel_speech)
     assert np.array_equal(serial_speech_by_stim, parallel_speech_by_stim)
+
+
+def test_snapshot_stats_match_serial_vs_parallel():
+    """purity, lineage stats, dominant genome, and hearing_response are
+    all collected through the same per-cell-independent-rng path as
+    scores/speech -- must be exactly reproducible between serial and
+    parallel runs too."""
+
+    def run(n_workers):
+        with GridWorld(seed=9, grid_size=4, wind_period=3, festival_period=2, n_workers=n_workers) as world:
+            for _ in range(9):
+                world.run_day()
+            scores = world.run_day(want_snapshot=True)
+            return world.snapshot(scores)
+
+    serial_snap = run(n_workers=None)
+    parallel_snap = run(n_workers=2)
+    for key in ("score", "speech_by_stimulus", "purity", "dominant_lineage_id", "lineage_purity",
+                "dominant_genome", "hearing_response"):
+        assert np.array_equal(serial_snap[key], parallel_snap[key]), f"mismatch in {key}"
 
 
 def test_end_to_end_small_grid_run_is_reproducible_and_conserves_population():
@@ -292,10 +339,18 @@ def test_snapshot_shapes_and_purity():
     1.0 the moment even one individual's genome differs."""
     grid_size = 4
     with GridWorld(seed=0, grid_size=grid_size) as world:
-        all_zero = [Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8))) for _ in range(N_INDIVIDUALS)]
-        world.cells[0][0].individuals = [Individual(genome=ind.genome.copy()) for ind in all_zero]
-        mixed = [Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8))) for _ in range(N_INDIVIDUALS - 1)]
-        mixed.append(Individual(genome=Genome(bits=np.ones(448, dtype=np.uint8))))
+        # cell (0,0): identical genomes AND identical lineage_ids -- both
+        # purity metrics should agree here (1.0).
+        world.cells[0][0].individuals = [
+            Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8)), lineage_id=500) for _ in range(N_INDIVIDUALS)
+        ]
+        # cell (0,1): genome-purity 7/8 (one odd-one-out genome), but a
+        # *different* grouping by lineage_id (5 vs 3) -- proves lineage
+        # tracking is independent of genome-byte tracking, not a
+        # relabeling of the same thing.
+        mixed = [Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8)), lineage_id=600) for _ in range(5)]
+        mixed += [Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8)), lineage_id=700) for _ in range(2)]
+        mixed.append(Individual(genome=Genome(bits=np.ones(448, dtype=np.uint8)), lineage_id=700))
         world.cells[0][1].individuals = mixed
 
         scores = world.run_day(want_snapshot=True)
@@ -308,6 +363,23 @@ def test_snapshot_shapes_and_purity():
         assert snap["purity"][0, 0] == 1.0
         assert snap["purity"][0, 1] == (N_INDIVIDUALS - 1) / N_INDIVIDUALS
 
+        assert snap["dominant_lineage_id"].shape == (grid_size, grid_size)
+        assert snap["lineage_purity"].shape == (grid_size, grid_size)
+        assert snap["dominant_genome"].shape == (grid_size, grid_size, 448)
+        assert snap["hearing_response"].shape == (grid_size, grid_size, N_INDIVIDUALS, N_STIM_PAIRS, 4)
+
+        assert snap["dominant_lineage_id"][0, 0] == 500
+        assert snap["lineage_purity"][0, 0] == 1.0
+        assert snap["dominant_lineage_id"][0, 1] == 600
+        assert snap["lineage_purity"][0, 1] == 5 / N_INDIVIDUALS
+        # every cell's dominant genome must actually be one of that cell's
+        # 8 individuals' genomes, not garbage
+        cell00_bytes = {ind.genome.bits.tobytes() for ind in world.cells[0][0].individuals}
+        assert snap["dominant_genome"][0, 0].tobytes() in cell00_bytes
+        # hearing_response counts must sum to 4 (the day's reps) per
+        # individual per stimulus pair, everywhere
+        assert np.all(snap["hearing_response"].sum(axis=-1) == 4)
+
 
 def test_snapshot_requires_want_snapshot():
     with GridWorld(seed=0, grid_size=4) as world:
@@ -316,19 +388,40 @@ def test_snapshot_requires_want_snapshot():
             world.snapshot(scores)
 
 
+def test_snapshot_rejects_stale_stats_from_an_earlier_day():
+    """A want_snapshot=True day followed by a want_snapshot=False day
+    must not let snapshot() silently pair the new day's scores with the
+    previous day's now-stale purity/lineage/genome stats -- it must
+    raise, not return mismatched data."""
+    with GridWorld(seed=0, grid_size=4) as world:
+        world.run_day(want_snapshot=True)  # day 1: stats computed
+        scores = world.run_day(want_snapshot=False)  # day 2: stats NOT refreshed
+        with pytest.raises(RuntimeError):
+            world.snapshot(scores)
+
+
 def test_snapshot_purity_reflects_pre_reproduction_population():
-    """Purity must describe the same population that produced this day's
-    score -- computed before that day's local_reproduce (or any later
-    festival/wind) mutates the cell, not after. Verified by spying on
-    local_reproduce (a plain instance method, unlike the numpy Generator
-    calls elsewhere in this file, which can't be monkeypatched) to
-    capture exactly what the population looked like at the moment
-    reproduction was about to run, and checking last_day_purity matches
-    that captured snapshot rather than whatever comes after it."""
+    """Purity and lineage stats must describe the same population that
+    produced this day's score -- computed before that day's
+    local_reproduce (or any later festival/wind) mutates the cell, not
+    after. Verified by spying on local_reproduce (a plain instance
+    method, unlike the numpy Generator calls elsewhere in this file,
+    which can't be monkeypatched) to capture exactly what the population
+    looked like at the moment reproduction was about to run, and
+    checking last_day_purity / last_day_dominant_lineage_id /
+    last_day_lineage_purity all match that captured snapshot rather than
+    whatever comes after it."""
     grid_size = 4
     with GridWorld(seed=0, grid_size=grid_size, wind_period=None, festival_period=None) as world:
         cell = world.cells[0][0]
-        distinct = [Individual(genome=Genome(bits=np.eye(448, dtype=np.uint8)[i])) for i in range(N_INDIVIDUALS)]
+        # distinct genomes (proves purity's timing) AND a controlled,
+        # non-trivial lineage split (proves lineage stats' timing too,
+        # independent of the genome grouping): 5 individuals share
+        # lineage_id 42, the other 3 are each unique.
+        distinct = [
+            Individual(genome=Genome(bits=np.eye(448, dtype=np.uint8)[i]), lineage_id=(42 if i < 5 else 900 + i))
+            for i in range(N_INDIVIDUALS)
+        ]
         cell.individuals = distinct
 
         captured = {}
@@ -336,6 +429,7 @@ def test_snapshot_purity_reflects_pre_reproduction_population():
 
         def spy_reproduce(scores):
             captured["bits_at_call_time"] = [ind.genome.bits.copy() for ind in cell.individuals]
+            captured["lineage_ids_at_call_time"] = [ind.lineage_id for ind in cell.individuals]
             return original_reproduce(scores)
 
         cell.local_reproduce = spy_reproduce
@@ -344,6 +438,11 @@ def test_snapshot_purity_reflects_pre_reproduction_population():
 
         expected_purity = max(Counter(b.tobytes() for b in captured["bits_at_call_time"]).values()) / N_INDIVIDUALS
         assert world.last_day_purity[0, 0] == expected_purity
+
+        lineage_counts = Counter(captured["lineage_ids_at_call_time"])
+        expected_dominant_lineage, expected_count = lineage_counts.most_common(1)[0]
+        assert world.last_day_dominant_lineage_id[0, 0] == expected_dominant_lineage == 42
+        assert world.last_day_lineage_purity[0, 0] == expected_count / N_INDIVIDUALS == 5 / N_INDIVIDUALS
 
 
 def test_sample_cells_reproducible_and_survives_checkpoint(tmp_path):

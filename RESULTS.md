@@ -337,6 +337,107 @@ re-verified end-to-end with a fresh CLI smoke run covering the new
 filename tags, the resume-config mismatch error, and forcing serial
 (`--workers 1`) across a resume.
 
+## Closing 5 more gaps -- Codex, given the actual paper text, said metrics were still partial (2026-08-30)
+
+Asked directly whether the metric set above supports a *full* comparison
+against the paper's own Section 3 analysis, Codex was given the paper's
+own verbatim excerpts (not my paraphrase) and independently judged: no,
+still partial. Five concrete gaps, all closed:
+
+- **Persistent clone/lineage identity.** Score alone can't distinguish
+  "the same clone held this territory" from "an unrelated clone
+  independently reached the same score." Not an exact-genome-hash
+  registry (already rejected -- crossover on ~94% of reproductions,
+  `1 - 0.95^56`, makes exact genetic identity the wrong signal for a
+  persisting *strategy*). Instead: `Individual.lineage_id`, a
+  single-parent-inheritance ancestry label (like mitochondrial descent)
+  independent of the genome's actual bytes -- every founder gets a
+  globally unique id (`itertools.count()` in `GridWorld.__init__`);
+  every offspring (`local_reproduce`, `_run_festival`) inherits
+  parent_a's unchanged. `dominant_lineage_id` / `lineage_purity` in the
+  snapshot are the same Counter-based computation as genome purity,
+  just grouped by ancestry instead.
+- **The "cautious communicator" claim** (26's mostly play the safe -12
+  strategy, but rely on signaling specifically in Left Pred/Right Pred
+  trials) needs a policy check, not just speech volume. New
+  `LocalWorld.last_day_hearing_response`, shape `(8, 9, 4)`: per
+  individual per stimulus pair, counts of (heard-something & moved,
+  heard-something & stayed, heard-nothing & moved, heard-nothing &
+  stayed) across that pair's 4 daily reps -- "heard something" is a
+  per-trial fact (hearing is subpopulation-wide in this model), "moved"
+  is a movement *response* (attempted at least once during the trial),
+  tallied across all 9 stimulus pairs so the paper's specific prediction
+  (concentrated at index 4, not spread evenly) is actually checkable
+  rather than assumed.
+- **Signal honesty** (deception) needed no new instrumentation --
+  derivable from data already logged: `analyze_snapshot.py`'s new
+  `signal_informativeness()` compares speech during Pred-present
+  stimulus pairs against speech during no-stimulus-at-all pairs.
+- **Mixing-zone genetics**: the snapshot's new `dominant_genome`
+  (each cell's modal genome, free from the same Counter computation
+  purity already does) lets `analyze_snapshot.py`'s new
+  `border_genetic_distance()` measure genome Hamming distance and
+  lineage mismatch across a border, not just a score gap.
+- **Exact paper Plate days**: `--snapshot-days "2000,3800,4150,..."` in
+  the CLI, combined with the existing `--snapshot-every`.
+
+## Codex review round 2 -- 3 more bugs found and fixed, plus test-coverage gaps closed (2026-08-30)
+
+A second Codex pass on the work above (same reasoning as before: get an
+independent check before calling substantial new logic done) found:
+
+- **Stale snapshot stats could pair with the wrong day's scores.**
+  `snapshot()` only checked "were purity/lineage/genome stats ever
+  computed," not "were they computed *for this exact day*." A
+  `run_day(want_snapshot=True)` day followed by a
+  `run_day(want_snapshot=False)` day would let `snapshot()` silently
+  return the new day's `score` next to the *previous* day's now-stale
+  purity/lineage/genome data. Fixed: `GridWorld` now tracks
+  `_snapshot_day`, set only when stats are actually (re)computed;
+  `snapshot()` raises unless it matches the current day exactly.
+- **`hearing_response_summary()` invented probabilities from an epsilon
+  hack.** A stimulus pair with zero "heard" (or zero "unheard")
+  observations was reported as `P(moved | ...) = 0`, when that
+  conditional probability is genuinely undefined, not zero. Fixed with
+  `np.divide(..., where=denom > 0)`, returning `nan` and the raw
+  heard/unheard counts instead.
+- **"Moved" was defined as net displacement, which can miss a real
+  movement response.** An individual that fled and came back, or hit
+  the boundary clamp and landed back at its start, counted as "stayed."
+  Fixed: `moved` now means "attempted at least one move during the
+  trial" (`ind.network.move` fired), which is what the hearing-response
+  metric is actually meant to capture -- verified this doesn't change
+  either existing exact test (`_never_moving_individual` and
+  `_always_speaking_individual` both never trigger `move` at all, so
+  both definitions agree for them).
+- **Old-checkpoint compatibility** (a checkpoint saved before
+  `lineage_id` existed would break on load) was flagged but
+  deliberately not addressed with migration code: no such checkpoint
+  currently exists (Case 1 completed entirely before checkpointing was
+  even added), so this would be complexity for a currently-hypothetical
+  case, not a present data-loss risk. Documented here instead.
+
+Test gaps Codex found were real: the lineage-inheritance tests only
+checked "came from the top-scoring pool," which would also pass if
+parent_b's lineage were inherited instead of parent_a's. Fixed by
+monkeypatching `select_parents_and_victim` (a plain function, unlike the
+numpy Generator calls elsewhere in this codebase, which can't be
+monkeypatched) to pin exact parent_a/parent_b/victim indices -- for both
+`local_reproduce` (patched on `altruism.world`) and `_run_festival`
+(patched on `altruism.grid`, since that's where its own imported
+reference lives, not `altruism.world`'s). Also added: snapshot *value*
+tests for `dominant_lineage_id`/`lineage_purity` (not just shapes,
+using a lineage grouping deliberately different from the genome
+grouping, to prove it's tracking something independent); extended the
+pre-reproduction timing test to lineage stats too; and a new
+`tests/test_analyze_snapshot.py` with exact fixtures for
+`border_genetic_distance` (a 6-row two-block grid where the block split
+is known exactly), `signal_informativeness`, and
+`hearing_response_summary`'s nan-handling (reproducing Codex's own
+demonstration case directly).
+
+53/53 tests passing. Re-verified end-to-end with a fresh CLI smoke run.
+
 ## Not yet run
 
 - The paper's Case 2 (wind+festival, `wind_period=10`/`festival_period=2`,
