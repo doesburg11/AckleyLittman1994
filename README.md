@@ -83,6 +83,22 @@ trial-structure implementation with no fitting involved.
   `RESULTS.md` for the full gap list and why ancestry (not exact genome
   bytes) is the right way to track a persisting clone.
 
+**What Case 1 is actually testing.** It's the harshest, simplest version
+of the paper's central question -- kin selection can only favor costly
+communication if communication range and breeding range are correlated,
+and wind-only migration ("anything goes," no group-cohesion mechanism at
+all) is the crudest way to inject the imperfection that keeps a
+population from freezing. Two questions it's built to answer, and the
+reference point Case 2/3 get compared against:
+- **Can communication even get started under the harshest disruption
+  tested?** Yes -- communicating clones (the paper's "26's") repeatedly
+  emerge.
+- **Can it survive there?** No, not durably -- wind keeps scrambling
+  who-you-hear vs. who-you're-related-to, so non-communicating "cheaters"
+  ("-12's") keep re-invading before a communicating clone can grow large.
+  The population mean climbs but plateaus well short of full
+  communicator dominance.
+
 **Done and run**: Case 1 (wind-only), the paper's own configuration and
 full 128×128/131,072-individual scale, completed in ~59 hours wall-clock
 — see `RESULTS.md` for the full result (a 4-phase trajectory: rapid
@@ -92,11 +108,16 @@ dominating for the remaining ~4,300+ days through the end of the run).
 This run predates the full metric set above, so it can't itself confirm
 whether the dominant clones were actually communicating.
 
+**In progress**: Case 2 (wind+festival), launched 2026-08-30 at the
+paper's own configuration (wind every 10th day, festival every 2nd day,
+14,580 days), full scale, with the complete metric set (speech,
+lineage, hearing-response, snapshots) enabled from the start.
+
 **Not yet done**:
-- Case 2 (wind+festival) and Case 3 (festival-only) — not launched yet.
-- A Case 1 redo (or Case 2/3's first run) with the full metric set, to
-  directly confirm or refute whether dominant clones are actually
-  communicating rather than inferring it from score shape alone.
+- Case 3 (festival-only) — not launched yet.
+- A Case 1 redo with the full metric set, to directly confirm or refute
+  whether that run's dominant clones were actually communicating rather
+  than inferring it from score shape alone.
 
 See `RESULTS.md` for validation details and status as the global level is
 built out.

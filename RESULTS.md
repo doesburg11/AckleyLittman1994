@@ -132,6 +132,23 @@ the result. 33/33 tests passing.
 
 ## Case 1 (wind-only), full paper scale — completed (launched 2026-08-27, finished 2026-08-30)
 
+**What this case is actually testing.** The paper's central claim is
+that kin selection can only favor costly communication if communication
+range and breeding range are correlated -- but not perfectly correlated,
+or the population just freezes at whatever it started with. Wind-only
+migration ("anything goes," no group-cohesion mechanism at all, unlike
+festival in Cases 2/3) is the crudest way to inject the imperfection
+that keeps that from happening. Two questions this case is built to
+answer, and the baseline Cases 2/3 get compared against:
+- **Can communication even get started under the harshest disruption
+  tested?** Yes -- communicating clones (the paper's "26's") repeatedly
+  emerge.
+- **Can it survive there?** No, not durably -- wind keeps scrambling
+  who-you-hear vs. who-you're-related-to, so non-communicating
+  "cheaters" ("-12's") keep re-invading before a communicating clone can
+  grow large. The population mean climbs but plateaus well short of
+  full communicator dominance.
+
 Run at the paper's own Case 1 configuration: `--grid-size 128
 --wind-period 5 --days 13110 --seed 0 --workers 30`, detached
 (nohup+disowned). Completed cleanly in ~59 hours wall-clock (~18.8s/day
