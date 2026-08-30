@@ -5,12 +5,15 @@ level's day/scoring/reproduction cycle (world.py).
 
 import os
 import pickle
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
 from altruism.genome import crossover
-from altruism.world import Individual, LocalWorld, N_INDIVIDUALS, select_parents_and_victim
+from altruism.world import Individual, LocalWorld, N_INDIVIDUALS, N_STIM_PAIRS, select_parents_and_victim
+
+N_SAMPLE_CELLS = 8
 
 GRID_SIZE_DEFAULT = 128
 N_QUAD_INDIVIDUALS = 4 * N_INDIVIDUALS  # 32
@@ -88,6 +91,7 @@ class GridWorld:
         self._n_workers = n_workers
         self._executor = ProcessPoolExecutor(max_workers=n_workers) if n_workers and n_workers > 1 else None
         self.last_day_speech = np.zeros((grid_size, grid_size, N_INDIVIDUALS))
+        self.last_day_speech_by_stimulus = np.zeros((grid_size, grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
 
         # One independent child RNG stream per cell (for that cell's own
         # trial/local-reproduction randomness) plus one more for the grid
@@ -105,24 +109,34 @@ class GridWorld:
             for row in range(grid_size)
         ]
 
+        # A fixed set of randomly-chosen subpopulations to track over the
+        # whole run (the paper's own Figure 2/3/4 "sample" scatter series)
+        # -- drawn once here so it's part of the reproducible seed
+        # sequence and, being a plain attribute, preserved automatically
+        # across a checkpoint save/load.
+        sample_rows = self.rng.integers(0, grid_size, size=N_SAMPLE_CELLS)
+        sample_cols = self.rng.integers(0, grid_size, size=N_SAMPLE_CELLS)
+        self.sample_cells: list[tuple[int, int]] = list(zip(sample_rows.tolist(), sample_cols.tolist()))
+
     def run_day(self) -> np.ndarray:
         """Runs one full day: every cell's 36-trial scoring (plus local
         reproduction, unless today is a festival day for that cell),
         then festival reproduction if today is a festival day, then wind
         migration if today is a windy day. Returns today's scores, shape
         (grid_size, grid_size, N_INDIVIDUALS). Also refreshes
-        `last_day_speech` (same shape) -- each cell's
-        `last_day_speech_activity`, a cheap communication-activity proxy,
-        collected as a side effect of scoring."""
+        `last_day_speech` and `last_day_speech_by_stimulus` -- each
+        cell's speech-activity totals, a cheap communication-activity
+        proxy, collected as a side effect of scoring."""
         self.day += 1
         is_festival = self.festival_period is not None and self.day % self.festival_period == 0
         is_windy = self.wind_period is not None and self.day % self.wind_period == 0
 
         if self._executor is not None:
-            scores, speech = self._run_scoring_parallel(do_local_reproduce=not is_festival)
+            scores, speech, speech_by_stim = self._run_scoring_parallel(do_local_reproduce=not is_festival)
         else:
-            scores, speech = self._run_scoring_serial(do_local_reproduce=not is_festival)
+            scores, speech, speech_by_stim = self._run_scoring_serial(do_local_reproduce=not is_festival)
         self.last_day_speech = speech
+        self.last_day_speech_by_stimulus = speech_by_stim
 
         if is_festival:
             self._run_festival(scores)
@@ -131,25 +145,28 @@ class GridWorld:
 
         return scores
 
-    def _run_scoring_serial(self, do_local_reproduce: bool) -> tuple[np.ndarray, np.ndarray]:
+    def _run_scoring_serial(self, do_local_reproduce: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
+        speech_by_stim = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
         for row in range(self.grid_size):
             for col in range(self.grid_size):
                 cell = self.cells[row][col]
                 scores[row, col] = cell.run_day()
                 speech[row, col] = cell.last_day_speech_activity
+                speech_by_stim[row, col] = cell.last_day_speech_by_stimulus
                 if do_local_reproduce:
                     cell.local_reproduce(scores[row, col])
-        return scores, speech
+        return scores, speech, speech_by_stim
 
-    def _run_scoring_parallel(self, do_local_reproduce: bool) -> tuple[np.ndarray, np.ndarray]:
+    def _run_scoring_parallel(self, do_local_reproduce: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         flat_cells = [self.cells[row][col] for row in range(self.grid_size) for col in range(self.grid_size)]
         chunks = _chunk(flat_cells, self._n_workers)
         futures = [self._executor.submit(_score_chunk, chunk, do_local_reproduce) for chunk in chunks]
 
         scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
+        speech_by_stim = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
         flat_index = 0
         for future in futures:
             updated_cells, chunk_scores = future.result()
@@ -158,8 +175,41 @@ class GridWorld:
                 self.cells[row][col] = local_world
                 scores[row, col] = day_scores
                 speech[row, col] = local_world.last_day_speech_activity
+                speech_by_stim[row, col] = local_world.last_day_speech_by_stimulus
                 flat_index += 1
-        return scores, speech
+        return scores, speech, speech_by_stim
+
+    def snapshot(self, scores: np.ndarray) -> dict:
+        """A full spatial snapshot for the day `scores` (and the current
+        `last_day_speech_by_stimulus`) came from -- the paper's own
+        "Plates" showed a color-coded map of which clone occupies which
+        cell; this is the data behind that, at whatever resolution the
+        caller chooses to snapshot at (not meant to be called every day
+        at full scale -- see run_grid_simulation.py's --snapshot-every).
+
+        - `score`: (grid_size, grid_size) that day's per-cell average.
+        - `speech_by_stimulus`: (grid_size, grid_size, N_STIM_PAIRS)
+          per-cell average over its 8 individuals -- directly answers
+          whether a cell's occupants call selectively (e.g. only for
+          the paper's Left Pred/Right Pred case, index 4) or constantly.
+        - `purity`: (grid_size, grid_size) -- the largest group of a
+          cell's 8 individuals sharing bit-identical genomes, divided by
+          8. 1.0 = fully converged monoculture; low purity flags a
+          recently-contested or border cell (paper-consistent "clone"
+          identity is by behavior/score, not exact genetic lineage --
+          see RESULTS.md for why an exact-genome registry was rejected).
+        """
+        purity = np.empty((self.grid_size, self.grid_size))
+        for row in range(self.grid_size):
+            for col in range(self.grid_size):
+                genome_bytes = [ind.genome.bits.tobytes() for ind in self.cells[row][col].individuals]
+                purity[row, col] = max(Counter(genome_bytes).values()) / N_INDIVIDUALS
+        return {
+            "day": self.day,
+            "score": scores.mean(axis=2),
+            "speech_by_stimulus": self.last_day_speech_by_stimulus.mean(axis=2),
+            "purity": purity,
+        }
 
     def close(self):
         """Shuts down the worker pool, if one was created. Safe to call

@@ -60,11 +60,20 @@ trial-structure implementation with no fitting involved.
   `--workers N` multiprocess pool for the per-cell scoring step (the
   dominant cost by far) — measured at a 7.7× wall-clock speedup on 32
   cores, with byte-identical output to a single-threaded run.
-- Speech-activity logging: a cheap, exactly-validated communication
-  proxy (total active speech-channel-bits per individual per day),
-  collected alongside scores and logged per-cell so a run can directly
-  check whether a high-scoring clone actually communicates more than
-  the population average.
+- Checkpoint/resume: `GridWorld.save_checkpoint()`/`load_checkpoint()`
+  (atomic pickle) plus `--checkpoint-every`/`--resume` in the CLI —
+  `kill <pid>` finishes the in-progress day, checkpoints, and exits
+  cleanly, so a long run can be stopped and resumed (or extended, or
+  re-analyzed with a metric added afterward) without restarting from
+  day 1. Verified against an uninterrupted reference run: byte-identical.
+- Full metric parity with the paper's own analysis: per-stimulus speech
+  breakdown (distinguishes constant talkers from the paper's "cautious
+  communicators"), periodic spatial snapshots (per-cell score/speech/
+  genetic-purity — the data behind the paper's "Plates"), the paper's
+  own 8-subpopulation sample-scatter series, and `analyze_snapshot.py`
+  for border/mixing-zone analysis. See `RESULTS.md` for why an exact
+  genome-lineage registry was considered and rejected in favor of the
+  paper's own score-based clone convention.
 
 **Done and run**: Case 1 (wind-only), the paper's own configuration and
 full 128×128/131,072-individual scale, completed in ~59 hours wall-clock
@@ -72,15 +81,14 @@ full 128×128/131,072-individual scale, completed in ~59 hours wall-clock
 climb, a communicating-ish clone dominating for ~4,200 days, a ~2,200-day
 contested turnover, then a lower-scoring but more durable clone
 dominating for the remaining ~4,300+ days through the end of the run).
+This run predates the full metric set above, so it can't itself confirm
+whether the dominant clones were actually communicating.
 
 **Not yet done**:
 - Case 2 (wind+festival) and Case 3 (festival-only) — not launched yet.
-- Re-running Case 1 (or a fresh run) with speech-activity logging enabled,
-  to directly confirm or refute whether the dominant clones in that run
-  were actually more communicative, rather than inferring it from score
-  shape alone.
-- Any plotting/movie reproduction of Figure 2/3/4's "sample" scatter
-  series.
+- A Case 1 redo (or Case 2/3's first run) with the full metric set, to
+  directly confirm or refute whether dominant clones are actually
+  communicating rather than inferring it from score shape alone.
 
 See `RESULTS.md` for validation details and status as the global level is
 built out.

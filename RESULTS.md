@@ -196,13 +196,90 @@ alongside a never-moving individual's total confirmed at exactly 0.
 Parallel-vs-serial consistency for the new metric is also tested
 directly. 36/36 tests passing.
 
+## Checkpoint/resume (2026-08-30)
+
+Long runs had no way to save progress, so adding one more metric to an
+already-completed run meant re-running from day 1 -- exactly what
+happened wanting speech data for Case 1. `GridWorld.save_checkpoint()`/
+`load_checkpoint()` (pickle, atomic write via temp-file + `os.replace`)
+close this: `__getstate__`/`__setstate__` exclude the unpicklable
+`ProcessPoolExecutor` from the saved state without ever touching the
+live object, so a checkpoint never disturbs a run in progress, and
+`load_checkpoint`'s `n_workers` can differ from whatever the checkpoint
+was saved with. `run_grid_simulation.py` gains `--checkpoint-every`
+(periodic saves, default 500 days) and `--resume` (picks up at
+`checkpoint.day + 1`, appends to the existing CSV). SIGINT/SIGTERM (a
+plain `kill <pid>`) let the in-progress day finish, then save a final
+checkpoint and exit cleanly -- never taken mid-day. Verified two ways:
+3 new tests confirm a save/resume round trip (including changing worker
+count across it) lands on bit-identical genomes and speech-activity
+values as an uninterrupted run; a manual CLI smoke test killed a real
+run via SIGTERM mid-flight, resumed it, and diffed the resulting CSV
+against an uninterrupted reference run -- byte-identical, no duplicate
+or missing rows. 39/39 tests passing.
+
+## Full metric parity with the paper's own analysis (2026-08-30)
+
+Asked directly whether the logging supported a *full* comparison
+against the paper's own analysis -- it didn't. Five gaps, all closed:
+
+- **Per-stimulus speech breakdown** (`LocalWorld.last_day_speech_by_stimulus`,
+  shape `(8, 9)`): speech activity broken down by which of the 9
+  stimulus pairs was active (index 4 is the paper's own "Left Pred/Right
+  Pred" case), not just a flat daily total -- this is what would let a
+  future run distinguish a clone that talks constantly from the paper's
+  "cautious communicators," who mostly play the safe non-signaling
+  strategy and only call in specific situations. `last_day_speech_activity`
+  is now *derived* from this (`.sum(axis=1)`) rather than tracked
+  separately. Validated exactly: the always-speaking genome shows
+  exactly 12 (4 reps x 3 steps x 1 channel) in *every one* of the 9
+  columns, summing to the already-validated 108.
+- **Spatial snapshots** (`GridWorld.snapshot()`, `--snapshot-every` in
+  the CLI, written to `{out-dir}/snapshots/day{N}.npz`): per-cell score,
+  per-cell per-stimulus speech, and per-cell genetic **purity** (the
+  largest group of a cell's 8 individuals sharing bit-identical genomes,
+  divided by 8) -- the data behind the paper's "Plates" showing which
+  clone occupies which cell over time.
+- **Sample-scatter series**: `GridWorld.sample_cells`, 8 subpopulations
+  chosen once at random (part of the reproducible seed sequence,
+  preserved automatically across checkpoint/resume) and logged as 8
+  extra CSV columns every day -- the paper's own third curve, showing
+  spread across the array.
+- **Mixing-zone/border analysis**: a new standalone script,
+  `analyze_snapshot.py`, loads one snapshot and reports mean score/purity
+  for border cells (any Moore neighbor's score differs by more than a
+  threshold) vs. interior cells -- directly testable against the paper's
+  claim that borders score lower from crosses between incompatible
+  types. Pure post-processing over the snapshot data; no new runtime
+  instrumentation needed.
+- **Clone/lineage tracking -- a deliberate non-addition.** An exact
+  genome-bit-hash registry was considered and rejected: the paper names
+  a "clone" by the *score* it produces ("we refer to an organism type by
+  the score it obtains... since that's deterministic"), not by exact
+  genetic identity, and with zero mutation but crossover firing on
+  ~94% of reproductions (`1 - 0.95^56`), almost every offspring is a
+  genetically distinct byte-string from either parent even when its
+  behavior is unchanged. A genome-hash registry would show constant
+  turnover even during an era the paper's own standard would call one
+  persisting clone (e.g. Case 1's 4,200-day "58-clone" era). The
+  per-cell score map + purity above is the paper-consistent version of
+  this same idea, without separate lineage bookkeeping.
+
+All verified with a small-grid CLI smoke run (`--snapshot-every 10`):
+snapshot `.npz` files load back with correct shapes and sane value
+ranges (score, `speech_by_stimulus` (8,8,9), purity in [0,1]), the 8
+sample + 9 speech-stimulus CSV columns are present, and
+`analyze_snapshot.py` produces a border-vs-interior comparison without
+error. 42/42 tests passing.
+
 ## Not yet run
 
 - The paper's Case 2 (wind+festival, `wind_period=10`/`festival_period=2`,
   14,580 days) and Case 3 (festival-only, `festival_period=2`, 99,980
-  days) -- not launched yet. Now that speech-activity logging exists,
-  worth deciding whether to re-run Case 1 with it enabled (to directly
-  confirm or refute the communicators-vs-cheaters reading above) before
-  or alongside launching Case 2/3 -- not yet decided.
-- Figure 2/3/4's "sample" scatter series and any movie/plate-style spatial
-  visualization.
+  days) -- not launched yet.
+- A Case 1 redo (or Case 2/3's first run) with the full metric set now
+  available, including speech-activity logging -- would let the
+  communicators-vs-cheaters reading of Case 1's result above actually be
+  confirmed or refuted, rather than inferred from score shape alone.
+  Checkpoint/resume means this no longer requires deciding up front --
+  a run can always be extended or re-analyzed later without restarting.

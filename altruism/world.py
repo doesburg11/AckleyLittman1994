@@ -17,6 +17,8 @@ N_STEPS_PER_TRIAL = 3
 MOVE_COST = 1
 
 STIMULI = (None, "Pred", "Food")
+STIM_PAIRS = [(left, right) for left in STIMULI for right in STIMULI]
+N_STIM_PAIRS = len(STIM_PAIRS)  # 9; index 4 is (Pred, Pred) -- the paper's "Left Pred/Right Pred" case
 
 # Score vectors: index by final location L=0,1=1,2=2,R=3 (Figure 1's table).
 # Values not spelled out in the paper for a stimulus type default to the
@@ -95,25 +97,31 @@ class LocalWorld:
         self.rng = rng
         self.individuals = individuals or [Individual(genome=founder_genome(rng)) for _ in range(N_INDIVIDUALS)]
         assert len(self.individuals) == N_INDIVIDUALS
-        # Total active speech-channel-bits emitted over the most recent
-        # day's 36 trials, per individual (max possible: 6 channels x 3
-        # steps x 36 trials = 648) -- a cheap communication-activity
-        # proxy, set fresh by every run_day() call.
+        # Active speech-channel-bits emitted over the most recent day's
+        # 36 trials, per individual, broken down by which of the 9
+        # stimulus pairs was active (max possible per pair: 6 channels x
+        # 3 steps x 4 reps = 72). `last_day_speech_activity` is the flat
+        # per-individual total (max 648) -- derived from this, not
+        # tracked separately. Both refreshed fresh by every run_day().
+        self.last_day_speech_by_stimulus = np.zeros((N_INDIVIDUALS, N_STIM_PAIRS))
         self.last_day_speech_activity = np.zeros(N_INDIVIDUALS)
 
     def run_day(self) -> np.ndarray:
         """Runs the day's 36 trials (all 9 stimulus combinations x 4 reps
         each) and returns each individual's total behavioral score for
         the day, in track order. Also refreshes
-        `last_day_speech_activity` as a side effect."""
+        `last_day_speech_by_stimulus` and `last_day_speech_activity` as a
+        side effect."""
         scores = np.zeros(N_INDIVIDUALS)
-        speech_activity = np.zeros(N_INDIVIDUALS)
-        stim_pairs = [(left, right) for left in STIMULI for right in STIMULI]
-        for left_stim, right_stim in stim_pairs:
+        speech_by_stimulus = np.zeros((N_INDIVIDUALS, N_STIM_PAIRS))
+        for stim_idx, (left_stim, right_stim) in enumerate(STIM_PAIRS):
             loc_by_rep = _latin_square_locations(self.rng)
             for rep in range(4):
-                scores += self._run_trial(left_stim, right_stim, loc_by_rep[rep], speech_activity)
-        self.last_day_speech_activity = speech_activity
+                scores += self._run_trial(
+                    left_stim, right_stim, loc_by_rep[rep], speech_by_stimulus[:, stim_idx]
+                )
+        self.last_day_speech_by_stimulus = speech_by_stimulus
+        self.last_day_speech_activity = speech_by_stimulus.sum(axis=1)
         return scores
 
     def _run_trial(

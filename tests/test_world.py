@@ -3,7 +3,15 @@ import pytest
 
 from altruism.genome import Genome
 from altruism.units import SPEAK, TRUE
-from altruism.world import Individual, LocalWorld, N_INDIVIDUALS, N_STEPS_PER_TRIAL, N_TRIALS_PER_DAY, _latin_square_locations
+from altruism.world import (
+    Individual,
+    LocalWorld,
+    N_INDIVIDUALS,
+    N_STEPS_PER_TRIAL,
+    N_STIM_PAIRS,
+    N_TRIALS_PER_DAY,
+    _latin_square_locations,
+)
 
 
 @pytest.fixture
@@ -124,3 +132,19 @@ def test_always_speaking_individual_has_exact_speech_activity(rng):
     world.run_day()
     assert world.last_day_speech_activity[0] == N_STEPS_PER_TRIAL * N_TRIALS_PER_DAY
     assert np.allclose(world.last_day_speech_activity[1:], 0.0)
+
+
+def test_always_speaking_individual_has_exact_speech_per_stimulus(rng):
+    """Same setup, but checking the per-stimulus breakdown: the
+    always-speaker must show exactly 4 reps x 3 steps x 1 channel = 12
+    in *every one* of the 9 stimulus-pair columns (regardless of which
+    stimuli were present, since this genome's one connection is fed by
+    TRUE, never by a sensor), summing to the already-validated 108."""
+    individuals = [_always_speaking_individual()] + [_never_moving_individual() for _ in range(N_INDIVIDUALS - 1)]
+    world = LocalWorld(rng, individuals=individuals)
+    world.run_day()
+    assert world.last_day_speech_by_stimulus.shape == (N_INDIVIDUALS, N_STIM_PAIRS)
+    expected_per_stimulus = N_STEPS_PER_TRIAL * 4  # 3 steps x 4 reps = 12
+    assert np.array_equal(world.last_day_speech_by_stimulus[0], np.full(N_STIM_PAIRS, expected_per_stimulus))
+    assert np.allclose(world.last_day_speech_by_stimulus[1:], 0.0)
+    assert world.last_day_speech_by_stimulus[0].sum() == world.last_day_speech_activity[0]

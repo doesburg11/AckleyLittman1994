@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from altruism.genome import Genome
-from altruism.grid import COMPASS_OFFSETS, PHASE_OFFSETS, N_QUAD_INDIVIDUALS, GridWorld
-from altruism.world import Individual, N_INDIVIDUALS
+from altruism.grid import COMPASS_OFFSETS, N_SAMPLE_CELLS, PHASE_OFFSETS, N_QUAD_INDIVIDUALS, GridWorld
+from altruism.world import Individual, N_INDIVIDUALS, N_STIM_PAIRS
 
 
 @pytest.fixture
@@ -164,22 +164,24 @@ def test_grid_world_context_manager_shuts_down_executor():
 
 
 def test_last_day_speech_has_correct_shape_and_matches_serial_vs_parallel():
-    """`last_day_speech` (a communication-activity proxy, collected
-    alongside scores) must have the same shape as scores, and -- since
-    it's collected through the same per-cell-independent-rng path -- be
-    exactly reproducible between a serial and a parallel run, same as
-    the genome bits already are."""
+    """`last_day_speech` and `last_day_speech_by_stimulus` (a
+    communication-activity proxy, collected alongside scores) must have
+    the expected shapes, and -- since they're collected through the same
+    per-cell-independent-rng path -- be exactly reproducible between a
+    serial and a parallel run, same as the genome bits already are."""
 
     def run(n_workers):
         with GridWorld(seed=5, grid_size=4, wind_period=3, festival_period=2, n_workers=n_workers) as world:
             for _ in range(10):
                 world.run_day()
             assert world.last_day_speech.shape == (4, 4, N_INDIVIDUALS)
-            return world.last_day_speech.copy()
+            assert world.last_day_speech_by_stimulus.shape == (4, 4, N_INDIVIDUALS, N_STIM_PAIRS)
+            return world.last_day_speech.copy(), world.last_day_speech_by_stimulus.copy()
 
-    serial_speech = run(n_workers=None)
-    parallel_speech = run(n_workers=2)
+    serial_speech, serial_speech_by_stim = run(n_workers=None)
+    parallel_speech, parallel_speech_by_stim = run(n_workers=2)
     assert np.array_equal(serial_speech, parallel_speech)
+    assert np.array_equal(serial_speech_by_stim, parallel_speech_by_stim)
 
 
 def test_end_to_end_small_grid_run_is_reproducible_and_conserves_population():
@@ -279,3 +281,41 @@ def test_save_checkpoint_does_not_disturb_a_live_executor(tmp_path):
         world.save_checkpoint(str(tmp_path / "checkpoint.pkl"))
         assert world._executor is not None
         world.run_day()  # must still work after saving a checkpoint
+
+
+def test_snapshot_shapes_and_purity():
+    """`snapshot()` must return the documented shapes, and purity must
+    be exactly computable: 1.0 for a cell whose 8 individuals share one
+    bit-identical genome (a fully converged monoculture), and less than
+    1.0 the moment even one individual's genome differs."""
+    grid_size = 4
+    with GridWorld(seed=0, grid_size=grid_size) as world:
+        all_zero = [Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8))) for _ in range(N_INDIVIDUALS)]
+        world.cells[0][0].individuals = [Individual(genome=ind.genome.copy()) for ind in all_zero]
+        mixed = [Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8))) for _ in range(N_INDIVIDUALS - 1)]
+        mixed.append(Individual(genome=Genome(bits=np.ones(448, dtype=np.uint8))))
+        world.cells[0][1].individuals = mixed
+
+        scores = world.run_day()
+        snap = world.snapshot(scores)
+
+        assert snap["day"] == 1
+        assert snap["score"].shape == (grid_size, grid_size)
+        assert snap["speech_by_stimulus"].shape == (grid_size, grid_size, N_STIM_PAIRS)
+        assert snap["purity"].shape == (grid_size, grid_size)
+        assert snap["purity"][0, 0] == 1.0
+        assert snap["purity"][0, 1] == (N_INDIVIDUALS - 1) / N_INDIVIDUALS
+
+
+def test_sample_cells_reproducible_and_survives_checkpoint(tmp_path):
+    world_a = GridWorld(seed=42, grid_size=8)
+    world_b = GridWorld(seed=42, grid_size=8)
+    assert len(world_a.sample_cells) == N_SAMPLE_CELLS
+    assert world_a.sample_cells == world_b.sample_cells
+    for row, col in world_a.sample_cells:
+        assert 0 <= row < 8 and 0 <= col < 8
+
+    checkpoint_path = str(tmp_path / "checkpoint.pkl")
+    world_a.save_checkpoint(checkpoint_path)
+    resumed = GridWorld.load_checkpoint(checkpoint_path)
+    assert resumed.sample_cells == world_a.sample_cells
