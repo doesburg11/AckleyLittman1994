@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from altruism.genome import Genome
-from altruism.world import Individual, LocalWorld, N_INDIVIDUALS, _latin_square_locations
+from altruism.units import SPEAK, TRUE
+from altruism.world import Individual, LocalWorld, N_INDIVIDUALS, N_STEPS_PER_TRIAL, N_TRIALS_PER_DAY, _latin_square_locations
 
 
 @pytest.fixture
@@ -16,6 +17,24 @@ def _never_moving_individual() -> Individual:
     specifier 0), so develop() yields zero connections -- MOVE can never
     turn on, by construction, at any point in any trial."""
     return Individual(genome=Genome(bits=np.zeros(448, dtype=np.uint8)))
+
+
+def _bits_for(value: int, n: int) -> list[int]:
+    return [int(c) for c in format(value, f"0{n}b")]
+
+
+def _always_speaking_individual() -> Individual:
+    """A hand-crafted genome with exactly one connection: TRUE -> SPEAK[0],
+    weight +11 (source mode). TRUE is always 1, so this one speech
+    channel is unconditionally active every step of every trial,
+    regardless of stimuli, location, or hearing -- a fully deterministic
+    speech-activity total, the same validation style as the -696 score
+    check."""
+    bits = np.zeros(448, dtype=np.uint8)
+    bits[19:24] = _bits_for(TRUE, 5)      # initial source = TRUE (unit 0)
+    bits[24:29] = _bits_for(SPEAK[0], 5)  # first group's connection-unit = SPEAK[0] (13)
+    bits[29:32] = _bits_for(6, 3)         # weight_specifier = 6 -> weight +11
+    return Individual(genome=Genome(bits=bits))
 
 
 def test_never_moving_individual_scores_exactly_minus_696(rng):
@@ -85,3 +104,23 @@ def test_local_reproduce_parents_come_from_top_half(rng):
         world.local_reproduce(scores)
         sums = [int(ind.genome.bits.sum()) for ind in world.individuals]
         assert all(s in (0, 448) for s in sums), f"unexpected genome mix: {sums}"
+
+
+def test_never_moving_individuals_have_zero_speech_activity(rng):
+    world = LocalWorld(rng, individuals=[_never_moving_individual() for _ in range(N_INDIVIDUALS)])
+    world.run_day()
+    assert np.allclose(world.last_day_speech_activity, 0.0)
+
+
+def test_always_speaking_individual_has_exact_speech_activity(rng):
+    """One deterministically-always-speaking individual among seven
+    never-moving (hence never-speaking) ones: the always-speaker's
+    day total must be exactly 1 active channel x 3 steps x 36 trials =
+    108, and every never-moving individual's total must be exactly 0 --
+    an exact, not statistical, check on the speech-activity accounting,
+    the same validation style as the -696 score check."""
+    individuals = [_always_speaking_individual()] + [_never_moving_individual() for _ in range(N_INDIVIDUALS - 1)]
+    world = LocalWorld(rng, individuals=individuals)
+    world.run_day()
+    assert world.last_day_speech_activity[0] == N_STEPS_PER_TRIAL * N_TRIALS_PER_DAY
+    assert np.allclose(world.last_day_speech_activity[1:], 0.0)

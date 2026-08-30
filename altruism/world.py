@@ -95,20 +95,30 @@ class LocalWorld:
         self.rng = rng
         self.individuals = individuals or [Individual(genome=founder_genome(rng)) for _ in range(N_INDIVIDUALS)]
         assert len(self.individuals) == N_INDIVIDUALS
+        # Total active speech-channel-bits emitted over the most recent
+        # day's 36 trials, per individual (max possible: 6 channels x 3
+        # steps x 36 trials = 648) -- a cheap communication-activity
+        # proxy, set fresh by every run_day() call.
+        self.last_day_speech_activity = np.zeros(N_INDIVIDUALS)
 
     def run_day(self) -> np.ndarray:
         """Runs the day's 36 trials (all 9 stimulus combinations x 4 reps
         each) and returns each individual's total behavioral score for
-        the day, in track order."""
+        the day, in track order. Also refreshes
+        `last_day_speech_activity` as a side effect."""
         scores = np.zeros(N_INDIVIDUALS)
+        speech_activity = np.zeros(N_INDIVIDUALS)
         stim_pairs = [(left, right) for left in STIMULI for right in STIMULI]
         for left_stim, right_stim in stim_pairs:
             loc_by_rep = _latin_square_locations(self.rng)
             for rep in range(4):
-                scores += self._run_trial(left_stim, right_stim, loc_by_rep[rep])
+                scores += self._run_trial(left_stim, right_stim, loc_by_rep[rep], speech_activity)
+        self.last_day_speech_activity = speech_activity
         return scores
 
-    def _run_trial(self, left_stim, right_stim, start_locations: list[int]) -> np.ndarray:
+    def _run_trial(
+        self, left_stim, right_stim, start_locations: list[int], speech_activity: np.ndarray
+    ) -> np.ndarray:
         for ind in self.individuals:
             ind.network.reset_trial(ind.genome)
         positions = list(start_locations)
@@ -128,6 +138,7 @@ class LocalWorld:
                 ) else 0
                 ind.network.react(pred=pred, food=food, location=loc_name, hearing=hearing)
                 this_step_speech[i] = ind.network.speech
+                speech_activity[i] += int(this_step_speech[i].sum())
                 if ind.network.move:
                     trial_scores[i] -= MOVE_COST
                     positions[i] += 1 if ind.network.to_r else -1

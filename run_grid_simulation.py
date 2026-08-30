@@ -1,13 +1,20 @@
 """CLI entry point for the global level (Section 2.3): runs a GridWorld
 for a number of days, logging one CSV row per day with the max and mean
 per-cell average behavioral score across the grid -- the same two curves
-the paper's own Figure 2/3/4 plot.
+the paper's own Figure 2/3/4 plot -- plus a cheap communication-activity
+proxy (total active speech-channel-bits per individual per day), both
+averaged across the grid and specifically for whichever cell holds that
+day's top score, so a run can be checked afterward for whether the
+best-scoring cell actually communicates more than the population at
+large.
 """
 
 import argparse
 import csv
 import os
 from pathlib import Path
+
+import numpy as np
 
 from altruism.grid import GRID_SIZE_DEFAULT, GridWorld
 
@@ -43,15 +50,26 @@ def main():
         n_workers=args.workers if args.workers > 1 else None,
     ) as world, open(out_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["day", "max_cell_avg_score", "mean_cell_avg_score"])
+        writer.writerow([
+            "day", "max_cell_avg_score", "mean_cell_avg_score",
+            "best_cell_speech_activity", "mean_cell_speech_activity",
+        ])
 
         for day in range(1, args.days + 1):
             scores = world.run_day()
             if day % args.log_every == 0 or day == args.days:
                 cell_avg = scores.mean(axis=2)  # (grid_size, grid_size)
-                writer.writerow([day, float(cell_avg.max()), float(cell_avg.mean())])
+                speech_avg = world.last_day_speech.mean(axis=2)  # (grid_size, grid_size)
+                best_cell = np.unravel_index(np.argmax(cell_avg), cell_avg.shape)
+                writer.writerow([
+                    day, float(cell_avg.max()), float(cell_avg.mean()),
+                    float(speech_avg[best_cell]), float(speech_avg.mean()),
+                ])
                 f.flush()
-                print(f"day {day}/{args.days}: max={cell_avg.max():.2f} mean={cell_avg.mean():.2f}")
+                print(
+                    f"day {day}/{args.days}: max={cell_avg.max():.2f} mean={cell_avg.mean():.2f} "
+                    f"best_cell_speech={speech_avg[best_cell]:.1f} mean_speech={speech_avg.mean():.1f}"
+                )
 
     print(f"Wrote {out_path}")
 

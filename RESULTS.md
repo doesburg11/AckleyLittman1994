@@ -130,59 +130,79 @@ bit-identical genomes given the same seed. Benchmarked on a 32×32 grid,
 byte-identical output confirming parallelization changed nothing about
 the result. 33/33 tests passing.
 
-## Case 1 (wind-only), full paper scale — launched 2026-08-27, in progress
+## Case 1 (wind-only), full paper scale — completed (launched 2026-08-27, finished 2026-08-30)
 
-Launched at the paper's own Case 1 configuration: `--grid-size 128
---wind-period 5 --days 13110 --seed 0 --workers 30`, run detached
-(nohup+disowned) so it survives independent of any terminal session.
-Measured throughput has held steady at ~18-19s/day the entire run
-(~30 of 32 cores in use, bursty rather than pegged, due to the daily
-IPC round-trip) -- full run estimated at ~2.7 days wall-clock.
+Run at the paper's own Case 1 configuration: `--grid-size 128
+--wind-period 5 --days 13110 --seed 0 --workers 30`, detached
+(nohup+disowned). Completed cleanly in ~59 hours wall-clock (~18.8s/day
+average, ~30 of 32 cores in use, bursty rather than pegged, due to the
+daily IPC round-trip), no crashes.
 
-**Max and mean per-cell-average score over the run so far** (sampled
-every 500 days):
+**Four-phase structure**, from a 200-day-windowed re-analysis of the full
+13,110-row log (min/max of the day-max column and mean of the day-mean
+column per window, so nothing here is cherry-picked from a coarser
+sample):
 
-| day | max | mean |
-|---|---|---|
-| 1 | -650.9 | -701.9 |
-| 500 | 42.0 | -283.0 |
-| 1,000 | 45.0 | -96.1 |
-| 1,500 | 63.25 | -63.8 |
-| 2,000 | 58.0 | -43.9 |
-| 3,000 | 58.0 | -20.5 |
-| 4,000 | 58.0 | -19.3 |
-| 5,000 | 58.0 | -19.3 |
-| 6,000 | 58.0 | -18.3 |
-| 6,500 | 58.0 | -17.7 |
-| 7,500 | 58.0 | -19.3 |
-| 8,500 | 58.0 | -19.8 |
-| 9,000 | 24.5 | -18.7 |
-| 10,000 | 24.0 | -19.8 |
-| 10,500 | 24.5 | -20.1 |
+| phase | days | max score | mean score | character |
+|---|---|---|---|---|
+| 1. Rapid climb | 0-2,400 | -650 → 58 | -702 → -26.5 | fast improvement off the random-founder baseline |
+| 2. First dominant clone | 2,400-6,600 (~4,200 days) | flat at 58.0, no exceptions | -26.5 → **-17.7** (best of the run) | one clone owns best-in-grid for 4,200 straight days |
+| 3. Contested turnover | 6,600-8,800 (~2,200 days) | swings repeatedly through 24-66 | -18 to -19.7 | not a clean collapse -- 58 keeps reappearing and getting knocked back down by several other clone scores (40.5/44.5/49.25/24.5) before finally losing for good |
+| 4. Second dominant clone | 8,800-13,110 (~4,300 days, through the end) | flat at 24.0-25.0, no exceptions | ~-19 to -20.3 | a *lower*-scoring but evidently more durable clone displaces the first and holds just as stably -- the run ends still in this regime |
 
-Two things worth flagging while the run is still in progress, not as a
-final result: (1) a single communicating cluster scoring 58 held on for
-roughly 6,500 straight days (day 2,000 to 8,500) before being invaded and
-displaced -- between day 8,500 and 9,000 the max collapsed to 24.5 and
-nothing comparably good has re-emerged since, a plausible live instance
-of the exact wind-only dynamic the paper describes (a communicating
-cluster can hold substantial territory for a long stretch, but has no
-guarantee of holding it indefinitely once wind keeps mixing communication
-range away from breeding range). (2) The population-wide *mean* barely
-moved through that whole rise-and-fall (-17.7 to -20.1) -- expected, since
-one 58-scoring cluster was always a tiny fraction of 16,384 subpopulations,
-matching the paper's own finding that communicators never dominate the
-array under wind-only migration. Read as consistent with the paper's
-described dynamics so far, not as a bug -- the full picture (including
-whatever the spatial trace looks like) isn't in until the run completes.
+The headline observation: the population's best discovered strategy
+actually got *worse* in absolute score (58 → 24-25) even though its
+replacement is competitively more durable under wind-only migration (it
+had already outlasted the first clone's reign by the time the run ended:
+4,300+ days vs. 4,200). The population-wide mean never moved far from
+the -17 to -20 band across either era, and never came close to the
+paper's own reported approach toward -12 -- consistent with, though not
+proof of, the paper's central thesis for Case 1: under wind-only
+migration a communicating-ish clone can hold substantial territory for
+a long stretch, but has no guarantee of holding it indefinitely, and can
+be permanently displaced by something that scores worse but doesn't pay
+whatever cost the first type was paying.
+
+**Important caveat**: this analysis is score data only. It does not
+confirm the 58-clone was actually more communicative (used the alarm/
+speech channels more) than the 24-25-clone that displaced it --
+that requires the speech-activity logging added below, not available
+for this run. Read the "communicators vs. cheaters" framing above as a
+plausible, paper-consistent interpretation of the score shape, not a
+directly verified claim.
+
+## Speech-activity logging (2026-08-30)
+
+To let a future run directly check *whether* a high-scoring clone is
+actually communicating more than average -- rather than inferring it
+from score shape alone, as Case 1's analysis above had to -- `LocalWorld`
+now tracks `last_day_speech_activity`: total active speech-channel-bits
+per individual over the day's 36 trials (max possible 6 channels x 3
+steps x 36 trials = 648), refreshed as a side effect of `run_day()`.
+`GridWorld` collects this into `last_day_speech` (same shape as scores),
+through both the serial and parallel scoring paths. `run_grid_simulation.py`
+now logs two additional CSV columns: `mean_cell_speech_activity` (grid-wide
+average) and `best_cell_speech_activity` (the speech activity specifically
+of whichever cell holds that day's top score) -- so a future run's CSV
+alone can show whether the best-scoring cell talks more than the
+population at large.
+
+Validated with an exact check in the same style as the -696 score
+validation: a hand-crafted genome with exactly one connection (TRUE ->
+one speech channel, source mode) is deterministically active every step
+regardless of stimuli, location, or hearing, giving an exact predicted
+day-total of 108 (3 steps x 36 trials x 1 channel) -- confirmed exactly,
+alongside a never-moving individual's total confirmed at exactly 0.
+Parallel-vs-serial consistency for the new metric is also tested
+directly. 36/36 tests passing.
 
 ## Not yet run
 
 - The paper's Case 2 (wind+festival, `wind_period=10`/`festival_period=2`,
   14,580 days) and Case 3 (festival-only, `festival_period=2`, 99,980
-  days) -- not launched yet, pending Case 1's outcome and a decision on
-  wall-clock budget (Case 3 alone is ~99,980 days; even parallelized,
-  a meaningfully longer commitment than Case 1).
+  days) -- not launched yet. Now that speech-activity logging exists,
+  worth deciding whether to re-run Case 1 with it enabled (to directly
+  confirm or refute the communicators-vs-cheaters reading above) before
+  or alongside launching Case 2/3 -- not yet decided.
 - Figure 2/3/4's "sample" scatter series and any movie/plate-style spatial
-  visualization -- the CSV logger currently only records max/mean
-  per-cell-average score per day.
+  visualization.

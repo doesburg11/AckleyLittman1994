@@ -85,6 +85,7 @@ class GridWorld:
         self._festival_phase = 0
         self._n_workers = n_workers
         self._executor = ProcessPoolExecutor(max_workers=n_workers) if n_workers and n_workers > 1 else None
+        self.last_day_speech = np.zeros((grid_size, grid_size, N_INDIVIDUALS))
 
         # One independent child RNG stream per cell (for that cell's own
         # trial/local-reproduction randomness) plus one more for the grid
@@ -107,15 +108,19 @@ class GridWorld:
         reproduction, unless today is a festival day for that cell),
         then festival reproduction if today is a festival day, then wind
         migration if today is a windy day. Returns today's scores, shape
-        (grid_size, grid_size, N_INDIVIDUALS)."""
+        (grid_size, grid_size, N_INDIVIDUALS). Also refreshes
+        `last_day_speech` (same shape) -- each cell's
+        `last_day_speech_activity`, a cheap communication-activity proxy,
+        collected as a side effect of scoring."""
         self.day += 1
         is_festival = self.festival_period is not None and self.day % self.festival_period == 0
         is_windy = self.wind_period is not None and self.day % self.wind_period == 0
 
         if self._executor is not None:
-            scores = self._run_scoring_parallel(do_local_reproduce=not is_festival)
+            scores, speech = self._run_scoring_parallel(do_local_reproduce=not is_festival)
         else:
-            scores = self._run_scoring_serial(do_local_reproduce=not is_festival)
+            scores, speech = self._run_scoring_serial(do_local_reproduce=not is_festival)
+        self.last_day_speech = speech
 
         if is_festival:
             self._run_festival(scores)
@@ -124,22 +129,25 @@ class GridWorld:
 
         return scores
 
-    def _run_scoring_serial(self, do_local_reproduce: bool) -> np.ndarray:
+    def _run_scoring_serial(self, do_local_reproduce: bool) -> tuple[np.ndarray, np.ndarray]:
         scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
+        speech = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         for row in range(self.grid_size):
             for col in range(self.grid_size):
                 cell = self.cells[row][col]
                 scores[row, col] = cell.run_day()
+                speech[row, col] = cell.last_day_speech_activity
                 if do_local_reproduce:
                     cell.local_reproduce(scores[row, col])
-        return scores
+        return scores, speech
 
-    def _run_scoring_parallel(self, do_local_reproduce: bool) -> np.ndarray:
+    def _run_scoring_parallel(self, do_local_reproduce: bool) -> tuple[np.ndarray, np.ndarray]:
         flat_cells = [self.cells[row][col] for row in range(self.grid_size) for col in range(self.grid_size)]
         chunks = _chunk(flat_cells, self._n_workers)
         futures = [self._executor.submit(_score_chunk, chunk, do_local_reproduce) for chunk in chunks]
 
         scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
+        speech = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         flat_index = 0
         for future in futures:
             updated_cells, chunk_scores = future.result()
@@ -147,8 +155,9 @@ class GridWorld:
                 row, col = divmod(flat_index, self.grid_size)
                 self.cells[row][col] = local_world
                 scores[row, col] = day_scores
+                speech[row, col] = local_world.last_day_speech_activity
                 flat_index += 1
-        return scores
+        return scores, speech
 
     def close(self):
         """Shuts down the worker pool, if one was created. Safe to call

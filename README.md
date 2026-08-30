@@ -56,17 +56,29 @@ trial-structure implementation with no fitting involved.
   phase-shifted (Margolus-neighborhood style) across successive festivals
   so every cell interacts with all eight of its neighbors over 4
   festivals.
-- A CLI runner (`run_grid_simulation.py`) and a small-scale smoke run
-  (8×8 grid, 200 days, wind+festival both enabled) — completed cleanly,
-  scores trending upward from the -696-ish baseline as expected. See
-  `RESULTS.md`.
+- A CLI runner (`run_grid_simulation.py`) with an optional
+  `--workers N` multiprocess pool for the per-cell scoring step (the
+  dominant cost by far) — measured at a 7.7× wall-clock speedup on 32
+  cores, with byte-identical output to a single-threaded run.
+- Speech-activity logging: a cheap, exactly-validated communication
+  proxy (total active speech-channel-bits per individual per day),
+  collected alongside scores and logged per-cell so a run can directly
+  check whether a high-scoring clone actually communicates more than
+  the population average.
+
+**Done and run**: Case 1 (wind-only), the paper's own configuration and
+full 128×128/131,072-individual scale, completed in ~59 hours wall-clock
+— see `RESULTS.md` for the full result (a 4-phase trajectory: rapid
+climb, a communicating-ish clone dominating for ~4,200 days, a ~2,200-day
+contested turnover, then a lower-scoring but more durable clone
+dominating for the remaining ~4,300+ days through the end of the run).
 
 **Not yet done**:
-- Launching the paper's actual scale (128×128/131,072 individuals) or its
-  Case 1/2/3 comparative studies (wind-only, wind+festival,
-  festival-only) — each of the paper's own runs took "multiples of
-  weeks" of wall-clock time even on a parallel supercomputer, so this is
-  a deliberate, separate scope decision, not yet made.
+- Case 2 (wind+festival) and Case 3 (festival-only) — not launched yet.
+- Re-running Case 1 (or a fresh run) with speech-activity logging enabled,
+  to directly confirm or refute whether the dominant clones in that run
+  were actually more communicative, rather than inferring it from score
+  shape alone.
 - Any plotting/movie reproduction of Figure 2/3/4's "sample" scatter
   series.
 

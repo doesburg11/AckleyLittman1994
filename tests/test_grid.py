@@ -163,6 +163,25 @@ def test_grid_world_context_manager_shuts_down_executor():
     assert world._executor is None
 
 
+def test_last_day_speech_has_correct_shape_and_matches_serial_vs_parallel():
+    """`last_day_speech` (a communication-activity proxy, collected
+    alongside scores) must have the same shape as scores, and -- since
+    it's collected through the same per-cell-independent-rng path -- be
+    exactly reproducible between a serial and a parallel run, same as
+    the genome bits already are."""
+
+    def run(n_workers):
+        with GridWorld(seed=5, grid_size=4, wind_period=3, festival_period=2, n_workers=n_workers) as world:
+            for _ in range(10):
+                world.run_day()
+            assert world.last_day_speech.shape == (4, 4, N_INDIVIDUALS)
+            return world.last_day_speech.copy()
+
+    serial_speech = run(n_workers=None)
+    parallel_speech = run(n_workers=2)
+    assert np.array_equal(serial_speech, parallel_speech)
+
+
 def test_end_to_end_small_grid_run_is_reproducible_and_conserves_population():
     def run(seed):
         world = GridWorld(seed=seed, grid_size=4, wind_period=3, festival_period=2)
