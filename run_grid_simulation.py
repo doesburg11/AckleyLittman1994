@@ -74,17 +74,35 @@ def main():
     )
     args = parser.parse_args()
 
+    def _period_tag(period):
+        return "none" if period is None else str(period)
+
+    run_tag = f"seed{args.seed}_size{args.grid_size}_w{_period_tag(args.wind_period)}_f{_period_tag(args.festival_period)}"
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"grid_seed{args.seed}_size{args.grid_size}.csv"
-    checkpoint_path = out_dir / f"checkpoint_seed{args.seed}_size{args.grid_size}.pkl"
+    out_path = out_dir / f"grid_{run_tag}.csv"
+    checkpoint_path = out_dir / f"checkpoint_{run_tag}.pkl"
     snapshot_dir = out_dir / "snapshots"
-    n_workers = args.workers if args.workers > 1 else None
+    # args.workers <= 1 is passed through as-is (not collapsed to None):
+    # GridWorld/load_checkpoint both already treat <=1 as "serial", and
+    # load_checkpoint's None specifically means "keep whatever the
+    # checkpoint was saved with" -- collapsing an explicit --workers 1
+    # to None would silently ignore a request to force serial on resume.
+    n_workers = args.workers
 
     if args.resume:
         if not checkpoint_path.exists():
             sys.exit(f"--resume given but no checkpoint found at {checkpoint_path}")
         world = GridWorld.load_checkpoint(str(checkpoint_path), n_workers=n_workers)
+        if world.grid_size != args.grid_size or world.wind_period != args.wind_period or (
+            world.festival_period != args.festival_period
+        ):
+            sys.exit(
+                f"--resume: checkpoint config (grid_size={world.grid_size}, "
+                f"wind_period={world.wind_period}, festival_period={world.festival_period}) "
+                f"doesn't match the CLI args given (grid_size={args.grid_size}, "
+                f"wind_period={args.wind_period}, festival_period={args.festival_period})"
+            )
         print(f"Resumed from {checkpoint_path} at day {world.day}")
         csv_mode = "a"
     else:
@@ -119,7 +137,8 @@ def main():
 
         stopped_early = False
         for day in range(world.day + 1, args.days + 1):
-            scores = world.run_day()
+            want_snapshot = bool(args.snapshot_every) and day % args.snapshot_every == 0
+            scores = world.run_day(want_snapshot=want_snapshot)
             if day % args.log_every == 0 or day == args.days:
                 cell_avg = scores.mean(axis=2)  # (grid_size, grid_size)
                 speech_avg = world.last_day_speech.mean(axis=2)  # (grid_size, grid_size)
@@ -140,7 +159,7 @@ def main():
                     f"best_cell_speech={speech_avg[best_cell]:.1f} mean_speech={speech_avg.mean():.1f}"
                 )
 
-            if args.snapshot_every and day % args.snapshot_every == 0:
+            if want_snapshot:
                 snap = world.snapshot(scores)
                 np.savez_compressed(
                     snapshot_dir / f"day{day:06d}.npz",

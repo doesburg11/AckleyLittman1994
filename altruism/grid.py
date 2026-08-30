@@ -30,7 +30,16 @@ COMPASS_OFFSETS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (
 PHASE_OFFSETS = [(0, 0), (0, 1), (1, 0), (1, 1)]
 
 
-def _score_chunk(local_worlds: list[LocalWorld], do_local_reproduce: bool):
+def _cell_purity(local_world: LocalWorld) -> float:
+    """The largest group of a cell's 8 individuals sharing bit-identical
+    genomes, divided by 8. Must be computed before local_reproduce (or
+    festival/wind) touches the cell, so it describes the same population
+    whose behavior just produced that day's score -- not tomorrow's."""
+    genome_bytes = [ind.genome.bits.tobytes() for ind in local_world.individuals]
+    return max(Counter(genome_bytes).values()) / N_INDIVIDUALS
+
+
+def _score_chunk(local_worlds: list[LocalWorld], do_local_reproduce: bool, want_purity: bool):
     """Worker-process entry point: runs each cell's day (and, unless a
     festival is about to override it, its local reproduction) in
     isolation. Each LocalWorld carries its own independent rng stream, so
@@ -38,12 +47,15 @@ def _score_chunk(local_worlds: list[LocalWorld], do_local_reproduce: bool):
     ran it or what order cells within a chunk were processed in, which is
     what makes this safe to parallelize without changing the outcome."""
     scores = []
+    purities = []
     for local_world in local_worlds:
         day_scores = local_world.run_day()
+        if want_purity:
+            purities.append(_cell_purity(local_world))
         if do_local_reproduce:
             local_world.local_reproduce(day_scores)
         scores.append(day_scores)
-    return local_worlds, scores
+    return local_worlds, scores, purities
 
 
 def _chunk(items: list, n: int) -> list[list]:
@@ -92,15 +104,21 @@ class GridWorld:
         self._executor = ProcessPoolExecutor(max_workers=n_workers) if n_workers and n_workers > 1 else None
         self.last_day_speech = np.zeros((grid_size, grid_size, N_INDIVIDUALS))
         self.last_day_speech_by_stimulus = np.zeros((grid_size, grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
+        self.last_day_purity: np.ndarray | None = None
 
         # One independent child RNG stream per cell (for that cell's own
-        # trial/local-reproduction randomness) plus one more for the grid
-        # itself (wind direction/emigrant draws, festival parent/victim
-        # draws) -- numpy's own recommended pattern for independent,
-        # reproducible parallel streams.
+        # trial/local-reproduction randomness), one for the grid's own
+        # mechanisms (wind direction/emigrant draws, festival parent/
+        # victim draws), and one purely for instrumentation (the sample-
+        # cell draw below) -- kept separate from the mechanism rng so
+        # that adding or changing logging-only instrumentation can never
+        # perturb the actual simulated trajectory. numpy's own
+        # recommended pattern for independent, reproducible parallel
+        # streams.
         seed_sequence = np.random.SeedSequence(seed)
-        child_seeds = seed_sequence.spawn(grid_size * grid_size + 1)
-        self.rng = np.random.default_rng(child_seeds[-1])
+        child_seeds = seed_sequence.spawn(grid_size * grid_size + 2)
+        self.rng = np.random.default_rng(child_seeds[-2])
+        instrumentation_rng = np.random.default_rng(child_seeds[-1])
         self.cells: list[list[LocalWorld]] = [
             [
                 LocalWorld(rng=np.random.default_rng(child_seeds[row * grid_size + col]))
@@ -111,14 +129,15 @@ class GridWorld:
 
         # A fixed set of randomly-chosen subpopulations to track over the
         # whole run (the paper's own Figure 2/3/4 "sample" scatter series)
-        # -- drawn once here so it's part of the reproducible seed
+        # -- drawn once here, from the instrumentation rng (never the
+        # mechanism rng above), so it's part of the reproducible seed
         # sequence and, being a plain attribute, preserved automatically
         # across a checkpoint save/load.
-        sample_rows = self.rng.integers(0, grid_size, size=N_SAMPLE_CELLS)
-        sample_cols = self.rng.integers(0, grid_size, size=N_SAMPLE_CELLS)
+        sample_rows = instrumentation_rng.integers(0, grid_size, size=N_SAMPLE_CELLS)
+        sample_cols = instrumentation_rng.integers(0, grid_size, size=N_SAMPLE_CELLS)
         self.sample_cells: list[tuple[int, int]] = list(zip(sample_rows.tolist(), sample_cols.tolist()))
 
-    def run_day(self) -> np.ndarray:
+    def run_day(self, want_snapshot: bool = False) -> np.ndarray:
         """Runs one full day: every cell's 36-trial scoring (plus local
         reproduction, unless today is a festival day for that cell),
         then festival reproduction if today is a festival day, then wind
@@ -126,17 +145,33 @@ class GridWorld:
         (grid_size, grid_size, N_INDIVIDUALS). Also refreshes
         `last_day_speech` and `last_day_speech_by_stimulus` -- each
         cell's speech-activity totals, a cheap communication-activity
-        proxy, collected as a side effect of scoring."""
+        proxy, collected as a side effect of scoring.
+
+        `want_snapshot=True` additionally computes `last_day_purity`
+        (grid_size, grid_size) -- required before calling `snapshot()`.
+        Purity is computed *during* the scoring pass, before that cell's
+        own local_reproduce (or any later festival/wind) touches it, so
+        it always describes the same population whose behavior just
+        produced this day's score -- not the population reproduction/
+        migration leaves behind afterward. Skipped by default since it
+        costs a per-individual genome comparison across every cell, not
+        worth paying on days nothing will read it."""
         self.day += 1
         is_festival = self.festival_period is not None and self.day % self.festival_period == 0
         is_windy = self.wind_period is not None and self.day % self.wind_period == 0
 
         if self._executor is not None:
-            scores, speech, speech_by_stim = self._run_scoring_parallel(do_local_reproduce=not is_festival)
+            scores, speech, speech_by_stim, purity = self._run_scoring_parallel(
+                do_local_reproduce=not is_festival, want_purity=want_snapshot
+            )
         else:
-            scores, speech, speech_by_stim = self._run_scoring_serial(do_local_reproduce=not is_festival)
+            scores, speech, speech_by_stim, purity = self._run_scoring_serial(
+                do_local_reproduce=not is_festival, want_purity=want_snapshot
+            )
         self.last_day_speech = speech
         self.last_day_speech_by_stimulus = speech_by_stim
+        if want_snapshot:
+            self.last_day_purity = purity
 
         if is_festival:
             self._run_festival(scores)
@@ -145,47 +180,60 @@ class GridWorld:
 
         return scores
 
-    def _run_scoring_serial(self, do_local_reproduce: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _run_scoring_serial(
+        self, do_local_reproduce: bool, want_purity: bool
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech_by_stim = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
+        purity = np.empty((self.grid_size, self.grid_size)) if want_purity else None
         for row in range(self.grid_size):
             for col in range(self.grid_size):
                 cell = self.cells[row][col]
                 scores[row, col] = cell.run_day()
                 speech[row, col] = cell.last_day_speech_activity
                 speech_by_stim[row, col] = cell.last_day_speech_by_stimulus
+                if want_purity:
+                    purity[row, col] = _cell_purity(cell)
                 if do_local_reproduce:
                     cell.local_reproduce(scores[row, col])
-        return scores, speech, speech_by_stim
+        return scores, speech, speech_by_stim, purity
 
-    def _run_scoring_parallel(self, do_local_reproduce: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _run_scoring_parallel(
+        self, do_local_reproduce: bool, want_purity: bool
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         flat_cells = [self.cells[row][col] for row in range(self.grid_size) for col in range(self.grid_size)]
         chunks = _chunk(flat_cells, self._n_workers)
-        futures = [self._executor.submit(_score_chunk, chunk, do_local_reproduce) for chunk in chunks]
+        futures = [
+            self._executor.submit(_score_chunk, chunk, do_local_reproduce, want_purity) for chunk in chunks
+        ]
 
         scores = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS))
         speech_by_stim = np.empty((self.grid_size, self.grid_size, N_INDIVIDUALS, N_STIM_PAIRS))
+        purity = np.empty((self.grid_size, self.grid_size)) if want_purity else None
         flat_index = 0
         for future in futures:
-            updated_cells, chunk_scores = future.result()
-            for local_world, day_scores in zip(updated_cells, chunk_scores):
+            updated_cells, chunk_scores, chunk_purities = future.result()
+            for i, (local_world, day_scores) in enumerate(zip(updated_cells, chunk_scores)):
                 row, col = divmod(flat_index, self.grid_size)
                 self.cells[row][col] = local_world
                 scores[row, col] = day_scores
                 speech[row, col] = local_world.last_day_speech_activity
                 speech_by_stim[row, col] = local_world.last_day_speech_by_stimulus
+                if want_purity:
+                    purity[row, col] = chunk_purities[i]
                 flat_index += 1
-        return scores, speech, speech_by_stim
+        return scores, speech, speech_by_stim, purity
 
     def snapshot(self, scores: np.ndarray) -> dict:
-        """A full spatial snapshot for the day `scores` (and the current
-        `last_day_speech_by_stimulus`) came from -- the paper's own
-        "Plates" showed a color-coded map of which clone occupies which
-        cell; this is the data behind that, at whatever resolution the
-        caller chooses to snapshot at (not meant to be called every day
-        at full scale -- see run_grid_simulation.py's --snapshot-every).
+        """A full spatial snapshot for the day `scores` came from -- the
+        paper's own "Plates" showed a color-coded map of which clone
+        occupies which cell; this is the data behind that. Requires the
+        `scores`-producing `run_day()` call to have been made with
+        `want_snapshot=True` (otherwise `last_day_purity` is stale or
+        absent, and this raises). Not meant to be called every day at
+        full scale -- see run_grid_simulation.py's --snapshot-every.
 
         - `score`: (grid_size, grid_size) that day's per-cell average.
         - `speech_by_stimulus`: (grid_size, grid_size, N_STIM_PAIRS)
@@ -194,21 +242,20 @@ class GridWorld:
           the paper's Left Pred/Right Pred case, index 4) or constantly.
         - `purity`: (grid_size, grid_size) -- the largest group of a
           cell's 8 individuals sharing bit-identical genomes, divided by
-          8. 1.0 = fully converged monoculture; low purity flags a
-          recently-contested or border cell (paper-consistent "clone"
-          identity is by behavior/score, not exact genetic lineage --
-          see RESULTS.md for why an exact-genome registry was rejected).
+          8, as of the same pre-reproduction/pre-migration moment
+          `score` describes. 1.0 = fully converged monoculture; low
+          purity flags a recently-contested or border cell
+          (paper-consistent "clone" identity is by behavior/score, not
+          exact genetic lineage -- see RESULTS.md for why an
+          exact-genome registry was rejected).
         """
-        purity = np.empty((self.grid_size, self.grid_size))
-        for row in range(self.grid_size):
-            for col in range(self.grid_size):
-                genome_bytes = [ind.genome.bits.tobytes() for ind in self.cells[row][col].individuals]
-                purity[row, col] = max(Counter(genome_bytes).values()) / N_INDIVIDUALS
+        if self.last_day_purity is None:
+            raise RuntimeError("snapshot() requires the preceding run_day() to have been called with want_snapshot=True")
         return {
             "day": self.day,
             "score": scores.mean(axis=2),
             "speech_by_stimulus": self.last_day_speech_by_stimulus.mean(axis=2),
-            "purity": purity,
+            "purity": self.last_day_purity,
         }
 
     def close(self):

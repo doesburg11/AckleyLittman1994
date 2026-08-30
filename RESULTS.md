@@ -272,6 +272,71 @@ sample + 9 speech-stimulus CSV columns are present, and
 `analyze_snapshot.py` produces a border-vs-interior comparison without
 error. 42/42 tests passing.
 
+## Codex review (2026-08-30) -- 4 real bugs found and fixed
+
+A second opinion on the checkpoint/metrics work above, requested before
+launching Case 2, caught four genuine issues (plus two lower-priority
+observations) that hadn't surfaced in testing:
+
+- **`sample_cells` was drawing from the same rng as wind/festival**
+  (`self.rng`). A logging-only feature was silently perturbing the
+  actual simulated trajectory -- any run using wind or festival would
+  diverge from what it would have produced without the sample-cell
+  instrumentation, since every wind-direction/emigrant and
+  festival-parent/victim draw downstream would be shifted by one extra
+  rng consumption. Fixed: a dedicated `instrumentation_rng`, spawned
+  separately, used only for sample-cell selection -- adding or changing
+  logging from here on can never again perturb the mechanism.
+- **`snapshot()`'s purity was computed from the *current* grid state
+  when called, after that day's `local_reproduce` (and, on windy/
+  festival days, migration/reproduction too) had already mutated every
+  cell -- while `score` describes the population *before* those
+  mutations.** A snapshot's own score and purity arrays described two
+  different populations, on every single day (not just windy/festival
+  ones, since local_reproduce runs on every non-festival day). Fixed:
+  purity is now computed *during* the same per-cell scoring pass as
+  score/speech, immediately after `run_day()` and before
+  `local_reproduce` touches that cell -- `run_day(want_snapshot=True)`
+  populates `last_day_purity`, which `snapshot()` now just reads (and
+  raises clearly if called without it). Verified with a white-box
+  regression test that spies on `local_reproduce` (a plain method,
+  unlike the numpy Generator calls elsewhere that can't be
+  monkeypatched) to confirm purity matches the population as it stood
+  at that exact moment, not whatever reproduction left behind.
+- **`--resume --workers 1` silently ignored the request to force
+  serial.** The CLI collapsed any `--workers <= 1` to `None` before
+  calling `load_checkpoint`, but `load_checkpoint`'s `n_workers=None`
+  specifically means "keep whatever the checkpoint was saved with" --
+  so resuming a checkpoint saved with 30 workers, asking for `--workers
+  1`, would silently keep using 30. Fixed: the CLI no longer collapses
+  to `None` at all; `GridWorld`/`load_checkpoint` already treat any
+  value `<= 1` as serial, so passing the literal value through removes
+  the ambiguity entirely.
+- **Checkpoint/CSV filenames only encoded seed and grid size, not
+  wind/festival period**, and `--resume` never validated the loaded
+  checkpoint's config against the CLI's current arguments -- two
+  different cases (e.g. Case 1 and Case 2) run into the same `--out-dir`
+  with the same seed would silently collide or cross-resume. Fixed:
+  filenames now also encode `w{wind_period}_f{festival_period}`, and
+  `--resume` errors clearly if the loaded grid_size/wind_period/
+  festival_period don't match what the CLI was just given.
+
+Two more points raised, deliberately not changed: a signal-check
+placement question (the actual race window -- between the existing
+end-of-loop check and the next day starting -- can't be meaningfully
+narrowed by relocating a flag check, so there was nothing to fix), and
+a tie-breaking observation in `select_parents_and_victim`'s
+`np.argsort` (ties bias toward low-index individuals; real, but
+pre-existing, already-validated core mechanics from before this
+session's changes, and low-impact since tied scores in practice mean
+identical genomes anyway -- not touched without separate sign-off).
+
+44/44 tests passing (2 new: the purity-timing regression test above,
+and a check that `snapshot()` raises without `want_snapshot=True`);
+re-verified end-to-end with a fresh CLI smoke run covering the new
+filename tags, the resume-config mismatch error, and forcing serial
+(`--workers 1`) across a resume.
+
 ## Not yet run
 
 - The paper's Case 2 (wind+festival, `wind_period=10`/`festival_period=2`,

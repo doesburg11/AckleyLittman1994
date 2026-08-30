@@ -1,3 +1,5 @@
+from collections import Counter
+
 import numpy as np
 import pytest
 
@@ -296,7 +298,7 @@ def test_snapshot_shapes_and_purity():
         mixed.append(Individual(genome=Genome(bits=np.ones(448, dtype=np.uint8))))
         world.cells[0][1].individuals = mixed
 
-        scores = world.run_day()
+        scores = world.run_day(want_snapshot=True)
         snap = world.snapshot(scores)
 
         assert snap["day"] == 1
@@ -305,6 +307,43 @@ def test_snapshot_shapes_and_purity():
         assert snap["purity"].shape == (grid_size, grid_size)
         assert snap["purity"][0, 0] == 1.0
         assert snap["purity"][0, 1] == (N_INDIVIDUALS - 1) / N_INDIVIDUALS
+
+
+def test_snapshot_requires_want_snapshot():
+    with GridWorld(seed=0, grid_size=4) as world:
+        scores = world.run_day()  # want_snapshot defaults to False
+        with pytest.raises(RuntimeError):
+            world.snapshot(scores)
+
+
+def test_snapshot_purity_reflects_pre_reproduction_population():
+    """Purity must describe the same population that produced this day's
+    score -- computed before that day's local_reproduce (or any later
+    festival/wind) mutates the cell, not after. Verified by spying on
+    local_reproduce (a plain instance method, unlike the numpy Generator
+    calls elsewhere in this file, which can't be monkeypatched) to
+    capture exactly what the population looked like at the moment
+    reproduction was about to run, and checking last_day_purity matches
+    that captured snapshot rather than whatever comes after it."""
+    grid_size = 4
+    with GridWorld(seed=0, grid_size=grid_size, wind_period=None, festival_period=None) as world:
+        cell = world.cells[0][0]
+        distinct = [Individual(genome=Genome(bits=np.eye(448, dtype=np.uint8)[i])) for i in range(N_INDIVIDUALS)]
+        cell.individuals = distinct
+
+        captured = {}
+        original_reproduce = cell.local_reproduce
+
+        def spy_reproduce(scores):
+            captured["bits_at_call_time"] = [ind.genome.bits.copy() for ind in cell.individuals]
+            return original_reproduce(scores)
+
+        cell.local_reproduce = spy_reproduce
+
+        world.run_day(want_snapshot=True)
+
+        expected_purity = max(Counter(b.tobytes() for b in captured["bits_at_call_time"]).values()) / N_INDIVIDUALS
+        assert world.last_day_purity[0, 0] == expected_purity
 
 
 def test_sample_cells_reproducible_and_survives_checkpoint(tmp_path):
