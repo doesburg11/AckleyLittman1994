@@ -3,6 +3,8 @@ migration and festival migration/reproduction layered on top of the local
 level's day/scoring/reproduction cycle (world.py).
 """
 
+import os
+import pickle
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -171,6 +173,40 @@ class GridWorld:
 
     def __exit__(self, exc_type, exc, tb):
         self.close()
+
+    def __getstate__(self) -> dict:
+        """A ProcessPoolExecutor can't be pickled -- excluded from the
+        saved state, never from the live object, so taking a checkpoint
+        never disturbs a run in progress."""
+        state = self.__dict__.copy()
+        state["_executor"] = None
+        return state
+
+    def __setstate__(self, state: dict):
+        self.__dict__.update(state)
+
+    def save_checkpoint(self, path: str):
+        """Atomic write (temp file + os.replace) so a crash or kill
+        mid-write can never leave a corrupt checkpoint behind."""
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "wb") as f:
+            pickle.dump(self, f)
+        os.replace(tmp_path, path)
+
+    @staticmethod
+    def load_checkpoint(path: str, n_workers: int | None = None) -> "GridWorld":
+        """`n_workers` overrides whatever pool size the checkpoint was
+        saved with -- fine to resume with a different worker count,
+        since the executor itself is never part of the pickled state."""
+        with open(path, "rb") as f:
+            world: GridWorld = pickle.load(f)
+        world._n_workers = n_workers if n_workers is not None else world._n_workers
+        world._executor = (
+            ProcessPoolExecutor(max_workers=world._n_workers)
+            if world._n_workers and world._n_workers > 1
+            else None
+        )
+        return world
 
     def _run_wind(self):
         """One global wind direction; independently in every cell, one

@@ -199,3 +199,83 @@ def test_end_to_end_small_grid_run_is_reproducible_and_conserves_population():
                 bits_a = world_a.cells[r][c].individuals[slot].genome.bits
                 bits_b = world_b.cells[r][c].individuals[slot].genome.bits
                 assert np.array_equal(bits_a, bits_b)
+
+
+def _grid_fingerprint(world):
+    """Genome bits and speech activity for every individual on the grid
+    -- enough to detect any divergence at all between two runs."""
+    return [
+        (
+            world.cells[r][c].individuals[slot].genome.bits.copy(),
+            world.last_day_speech[r, c, slot],
+        )
+        for r in range(world.grid_size)
+        for c in range(world.grid_size)
+        for slot in range(N_INDIVIDUALS)
+    ]
+
+
+def test_checkpoint_round_trip_matches_uninterrupted_run(tmp_path):
+    """Saving mid-run and resuming from that checkpoint must be
+    indistinguishable, day-for-day, from never having stopped: the same
+    seed run straight through N+M days must land on bit-identical
+    genomes and speech-activity values as N days followed by a
+    save/load and M more days."""
+    seed, grid_size, n, m = 11, 4, 12, 10
+
+    uninterrupted = GridWorld(seed=seed, grid_size=grid_size, wind_period=3, festival_period=2)
+    for _ in range(n + m):
+        uninterrupted.run_day()
+
+    world_a = GridWorld(seed=seed, grid_size=grid_size, wind_period=3, festival_period=2)
+    for _ in range(n):
+        world_a.run_day()
+    checkpoint_path = str(tmp_path / "checkpoint.pkl")
+    world_a.save_checkpoint(checkpoint_path)
+
+    resumed = GridWorld.load_checkpoint(checkpoint_path)
+    assert resumed.day == n
+    for _ in range(m):
+        resumed.run_day()
+
+    expected = _grid_fingerprint(uninterrupted)
+    actual = _grid_fingerprint(resumed)
+    for (exp_bits, exp_speech), (act_bits, act_speech) in zip(expected, actual):
+        assert np.array_equal(exp_bits, act_bits)
+        assert exp_speech == act_speech
+
+
+def test_checkpoint_resume_can_change_worker_count(tmp_path):
+    """Saved serial, resumed parallel (or vice versa) must still match
+    the same-seed serial-only equivalent -- the worker count used at any
+    point never affects the outcome."""
+    seed, grid_size, n, m = 13, 4, 8, 8
+
+    reference = GridWorld(seed=seed, grid_size=grid_size, wind_period=3, festival_period=2)
+    for _ in range(n + m):
+        reference.run_day()
+
+    with GridWorld(seed=seed, grid_size=grid_size, wind_period=3, festival_period=2, n_workers=None) as world:
+        for _ in range(n):
+            world.run_day()
+        checkpoint_path = str(tmp_path / "checkpoint.pkl")
+        world.save_checkpoint(checkpoint_path)
+
+    with GridWorld.load_checkpoint(checkpoint_path, n_workers=2) as resumed:
+        for _ in range(m):
+            resumed.run_day()
+        expected = _grid_fingerprint(reference)
+        actual = _grid_fingerprint(resumed)
+        for (exp_bits, exp_speech), (act_bits, act_speech) in zip(expected, actual):
+            assert np.array_equal(exp_bits, act_bits)
+            assert exp_speech == act_speech
+
+
+def test_save_checkpoint_does_not_disturb_a_live_executor(tmp_path):
+    """Taking a checkpoint mid-run must not touch the live object's own
+    executor -- __getstate__ excludes it only from the pickled copy."""
+    with GridWorld(seed=0, grid_size=4, n_workers=2) as world:
+        world.run_day()
+        world.save_checkpoint(str(tmp_path / "checkpoint.pkl"))
+        assert world._executor is not None
+        world.run_day()  # must still work after saving a checkpoint
