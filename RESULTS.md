@@ -526,6 +526,39 @@ score/purity/honesty data alone would not have surfaced, and it's the
 main reason this hearing-response metric was worth adding in the first
 place.
 
+**Why: traced directly to the champion genomes' wiring, not an
+instrumentation bug.** Before accepting a clean null like this, checked
+whether it was a counting artifact. It isn't -- `P(moved | heard)` and
+`P(moved | unheard)` land on identical values to 3-4 decimal places at
+every stimulus pair across every snapshot checked, which is what a real
+structural absence of effect looks like, not sampling noise. Confirmed
+directly by reconstructing each era's dominant genome from its
+snapshot's `dominant_genome` bits, developing its network
+(`altruism.network.Network`), and checking whether any HEAR unit
+(7-12) has a path -- direct or indirect, any number of hops/steps -- to
+the MOVE unit (19) via the genome's own connection graph:
+- The **42.0-floor champion** (days 12,000 and 13,000 -- the genome
+  that held the bulk of the run's territory for ~12,400 of its 14,580
+  days) has **zero graph path from any hearing unit to MOVE at all**.
+  Its movement decision cannot be influenced by hearing under any
+  circumstance -- not weak, not overridden, structurally absent. This
+  alone accounts for most of the null result, since this genome
+  dominated the grid for most of the run's length.
+- The **26.0-era champion** (days 13,500 and 14,500, post-transition)
+  *does* have a wired path (hearing channel 'd' -> MOVE, weight -3) --
+  so this genome is structurally capable of the paper's mechanism.
+  Directly toggling hearing fully on/off, holding predator state and
+  location fixed, across every combination: the MOVE decision never
+  once flipped. The other inputs into MOVE (weights up to +-11) dominate
+  the threshold regardless of what that one hearing channel says, so
+  the wiring exists but is functionally vestigial.
+
+Conclusion: this is a genuine finding about what evolved, not a
+measurement problem. Whatever pushed these clones' scores above the
+never-move baseline, it wasn't "hear the alarm, then move" -- most
+likely their own direct sensing of the predator/location inputs, which
+feed MOVE independently of anyone's speech.
+
 **Signal honesty: strongly selective, but the raw ratio is an
 artifact.** `signal_informativeness()` (Pred-present speech / no-Pred
 speech, per cell) comes back in the hundreds of millions at all four

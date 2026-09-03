@@ -119,9 +119,13 @@ unrelated clones trading the same score, not one clone holding on —
 invisible in score data alone. The paper's specific "cautious
 communicator" hearing-response signature (heard-alarm → moved,
 concentrated at the Left-Pred/Right-Pred stimulus) came back as an
-essentially null result across every stimulus pair, reported without
-softening since that's exactly what this metric was built to check.
-Signal honesty and mixing-zone genetics both came back positive
+essentially null result across every stimulus pair — traced directly
+to the champion genomes' own network wiring (not an instrumentation
+bug): the genome that held the bulk of the run's territory has zero
+graph path from any hearing unit to its movement unit at all, and the
+later champion that does have such wiring never actually uses it (its
+movement decision is dominated by other, stronger inputs regardless of
+what it hears). Signal honesty and mixing-zone genetics both came back positive
 (extremely selective Pred-triggered speech; borders modestly but
 consistently more genetically mismatched and lower-scoring than
 interiors).
