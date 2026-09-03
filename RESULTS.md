@@ -455,14 +455,120 @@ demonstration case directly).
 
 53/53 tests passing. Re-verified end-to-end with a fresh CLI smoke run.
 
+## Case 2 (wind+festival), full paper scale -- completed (2026-08-30)
+
+**What this case is actually testing.** Case 1 showed communication can
+start but not durably survive under wind-only migration, because wind
+scrambles who-you-hear vs. who-you're-related-to with no group-cohesion
+mechanism at all. Festival migration is the paper's fix: 32-individual
+quad tournaments that both migrate *and* reproduce together, so a
+successful lineage's neighbors are more likely to actually be its kin --
+communication range and breeding range pulled back into alignment. Case
+2 asks whether that's enough for a communicating clone to hold territory
+for much longer than Case 1's ~4,200-day run, and whether the paper's
+own reported result (population mean exceeding the never-moving
+baseline of -12 within a few thousand days) reproduces at this scale.
+
+Run: paper's own configuration end to end -- 128x128 grid (131,072
+individuals), `wind_period=10`, `festival_period=2`, 14,580 days,
+complete metric set (speech, lineage, hearing-response, snapshots)
+enabled from day 1. Completed in full, 14,580/14,580 days, with 58
+snapshots (`--snapshot-every 250`).
+
+**Trajectory (200-day windows of max/mean cell-average score):**
+
+| Phase | Days | Shape |
+|---|---|---|
+| 1. Rapid climb | 0 -- 600 | mean rises from -585.8 to -119.1 as the initial random population is culled |
+| 2. "42.0 floor" era | 600 -- 13,000+ | max cell score locks to exactly 42.0 and holds there for ~12,400 days straight; mean climbs slowly throughout, crossing the paper's -12 (never-moving) baseline around day 8,000-8,200 |
+| 3. Transition | ~13,000 -- 13,295 | max drops 42.0 -> 26.0 over roughly 25-100 days, sharp by comparison to Case 1's transition |
+| 4. "26.0 floor" era | 13,295 -- 14,580 (end) | max cell score locks to exactly 26.0 through the end of the run; mean stabilizes around -10 to -11 |
+
+Compared to the paper's own reported Case 2 result (population mean
+briefly exceeding -12 around day 3,000-5,000): this run's mean crosses
+-12 later (~day 8,000) but, unlike the paper's "brief" exceedance, never
+drops back below it again through the end of the run -- a sustained
+rather than transient improvement, at this scale and seed.
+
+**Headline finding: the "42.0 floor" was not one clone the whole
+time.** A naive read of the trajectory table above -- "max score pinned
+at exactly 42.0 for 12,400 days" -- suggests one dominant clone locked
+in and stayed there. The lineage-tracking metric (closed as gap #1 of
+the 5-gap review, specifically *because* score alone can't tell "same
+clone" from "different clone, same score") says otherwise: across all
+58 snapshots, the dominant `lineage_id` occupying the 42.0-scoring
+territory changes repeatedly -- 81249, 81144, 82092, 51628, 51950,
+56233, and (after the transition) a further mix of 51950 / 97048 /
+112008 / 28265 / 79972. Multiple unrelated lineages independently
+converged on the same 42.0 strategy and traded dominance of the same
+territory, invisible in score data alone. The champion's *territory
+size* was also shrinking well before its *score* changed: from roughly
+260 cells at day 4,750 down to single digits by day 13,000 -- a
+population in slow decline for thousands of days before the visible
+42.0 -> 26.0 transition, another signal pure max/mean tracking misses
+entirely.
+
+**Hearing-response ("cautious communicator") check: a null result.**
+The paper's specific claim is that a successful signaling clone plays
+the safe -12 (never-move) strategy in general, but *specifically*
+relies on hearing the alarm and moving in Left-Pred/Right-Pred trials
+(stimulus pair index 4) -- i.e. heard-vs-moved correlation should be
+concentrated at index 4 and near-absent elsewhere. Checked across 4
+representative snapshots (days 12,000 / 13,000 / 13,500 / 14,500) using
+`hearing_response_summary()`'s `P(moved | heard) - P(moved | unheard)`
+diff at each of the 9 stimulus pairs: the effect is essentially zero
+(~0.000) at *every* stimulus pair, including index 4. This run's
+dominant lineages are not showing the paper's specific
+hearing-triggers-movement signature at all, despite reaching high
+scores and despite the strong signal-honesty result below. Reported
+here without softening -- it's a real, somewhat unexpected result that
+score/purity/honesty data alone would not have surfaced, and it's the
+main reason this hearing-response metric was worth adding in the first
+place.
+
+**Signal honesty: strongly selective, but the raw ratio is an
+artifact.** `signal_informativeness()` (Pred-present speech / no-Pred
+speech, per cell) comes back in the hundreds of millions at all four
+checked snapshots. That number is real but misleading on its face: it's
+large because the no-Pred-speech denominator is close to zero, not
+because Pred-present speech is enormous -- i.e. these cells speak
+almost *only* when a predator stimulus is actually present, which is
+exactly the honest-signaling behavior the paper describes, but the
+astronomical ratio itself is a near-zero-denominator artifact and
+should be read as "extremely selective," not literally "N times more."
+
+**Mixing-zone genetics: borders modestly but consistently show
+incompatible-neighbor signal.** `border_genetic_distance()` across the
+same 4 snapshots: border cells (score-gap Moore-neighbor boundaries)
+show mean Hamming distance ~0.14 vs. interior ~0.10-0.11, and lineage
+mismatch rate ~0.49-0.50 vs. interior ~0.43-0.45 -- borders are
+genetically less related and more often cross-lineage than interior
+cells, and (at day 12,000) score at the border averages -8.09 vs. -1.71
+interior. Modest in magnitude, but consistent in direction across every
+snapshot checked -- direct genetic evidence for the paper's "mixing
+zone" claim, not just a score-gap proxy for it.
+
+**Case 1 vs. Case 2.** Festival migration did what it was meant to:
+the dominant-clone-adjacent "42.0 floor" territory held for ~12,400
+days here, roughly 3x longer than Case 1's best single era (~4,200 days
+for the "58" clone), and the eventual transition to the next era was
+much faster and cleaner (~25-100 days vs. Case 1's ~2,200-day contested
+back-and-forth). But "held longer" is not the same as "one victorious
+communicating clone" -- the lineage-succession finding above shows
+Case 2's floor era was itself a *sequence* of unrelated lineages
+cycling through the same score, and the hearing-response null result
+means this run doesn't confirm the paper's specific cautious-
+communicator mechanism was what got them there. Festival buys
+durability; it doesn't, at least in this run, produce the single
+long-lived kin-selected communicator the paper's mechanism describes.
+
 ## Not yet run
 
-- The paper's Case 2 (wind+festival, `wind_period=10`/`festival_period=2`,
-  14,580 days) and Case 3 (festival-only, `festival_period=2`, 99,980
-  days) -- not launched yet.
-- A Case 1 redo (or Case 2/3's first run) with the full metric set now
-  available, including speech-activity logging -- would let the
-  communicators-vs-cheaters reading of Case 1's result above actually be
-  confirmed or refuted, rather than inferred from score shape alone.
+- Case 3 (festival-only, `festival_period=2`, 99,980 days) -- not
+  launched yet; a much longer commitment even parallelized.
+- A Case 1 redo (or a fresh Case 2 run at a different seed) with the
+  full metric set now available from day 1 -- would let the
+  hearing-response null result above be checked for seed-dependence,
+  rather than concluding from a single run.
   Checkpoint/resume means this no longer requires deciding up front --
   a run can always be extended or re-analyzed later without restarting.

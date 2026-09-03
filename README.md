@@ -108,16 +108,30 @@ dominating for the remaining ~4,300+ days through the end of the run).
 This run predates the full metric set above, so it can't itself confirm
 whether the dominant clones were actually communicating.
 
-**In progress**: Case 2 (wind+festival), launched 2026-08-30 at the
-paper's own configuration (wind every 10th day, festival every 2nd day,
-14,580 days), full scale, with the complete metric set (speech,
-lineage, hearing-response, snapshots) enabled from the start.
+**Done and run**: Case 2 (wind+festival), the paper's own configuration
+(wind every 10th day, festival every 2nd day, 14,580 days), full
+128×128/131,072-individual scale, completed 2026-08-30 with the
+complete metric set (speech, lineage, hearing-response, snapshots)
+enabled from day 1 — see `RESULTS.md` for the full result. Headline:
+the dominant "42.0 floor" era held for ~12,400 days (~3× longer than
+Case 1's best era), but lineage tracking shows it was a *succession* of
+unrelated clones trading the same score, not one clone holding on —
+invisible in score data alone. The paper's specific "cautious
+communicator" hearing-response signature (heard-alarm → moved,
+concentrated at the Left-Pred/Right-Pred stimulus) came back as an
+essentially null result across every stimulus pair, reported without
+softening since that's exactly what this metric was built to check.
+Signal honesty and mixing-zone genetics both came back positive
+(extremely selective Pred-triggered speech; borders modestly but
+consistently more genetically mismatched and lower-scoring than
+interiors).
 
 **Not yet done**:
-- Case 3 (festival-only) — not launched yet.
-- A Case 1 redo with the full metric set, to directly confirm or refute
-  whether that run's dominant clones were actually communicating rather
-  than inferring it from score shape alone.
+- Case 3 (festival-only) — not launched yet; a much longer commitment
+  even parallelized (99,980 days).
+- A Case 1 redo, or a Case 2 rerun at a different seed, with the full
+  metric set from day 1 — would check whether the hearing-response null
+  result above is seed-dependent rather than concluding from one run.
 
 See `RESULTS.md` for validation details and status as the global level is
 built out.
