@@ -508,56 +508,76 @@ population in slow decline for thousands of days before the visible
 42.0 -> 26.0 transition, another signal pure max/mean tracking misses
 entirely.
 
-**Hearing-response ("cautious communicator") check: a null result.**
-The paper's specific claim is that a successful signaling clone plays
-the safe -12 (never-move) strategy in general, but *specifically*
-relies on hearing the alarm and moving in Left-Pred/Right-Pred trials
-(stimulus pair index 4) -- i.e. heard-vs-moved correlation should be
-concentrated at index 4 and near-absent elsewhere. Checked across 4
-representative snapshots (days 12,000 / 13,000 / 13,500 / 14,500) using
-`hearing_response_summary()`'s `P(moved | heard) - P(moved | unheard)`
-diff at each of the 9 stimulus pairs: the effect is essentially zero
-(~0.000) at *every* stimulus pair, including index 4. This run's
-dominant lineages are not showing the paper's specific
-hearing-triggers-movement signature at all, despite reaching high
-scores and despite the strong signal-honesty result below. Reported
-here without softening -- it's a real, somewhat unexpected result that
-score/purity/honesty data alone would not have surfaced, and it's the
-main reason this hearing-response metric was worth adding in the first
-place.
+**Hearing-response ("cautious communicator") check: null in aggregate,
+but not the whole story.** The paper's specific claim is that a
+successful signaling clone plays the safe -12 (never-move) strategy in
+general, but *specifically* relies on hearing the alarm and moving in
+Left-Pred/Right-Pred trials (stimulus pair index 4) -- i.e. heard-vs-
+moved correlation should be concentrated at index 4 and near-absent
+elsewhere. Checked across 4 representative snapshots (days 12,000 /
+13,000 / 13,500 / 14,500) using `hearing_response_summary()`'s
+`P(moved | heard) - P(moved | unheard)` diff at each of the 9 stimulus
+pairs: the effect is essentially zero (~0.000, max ~0.00066) at every
+stimulus pair, including index 4, for this specific "moved at least
+once per trial" summary statistic. But (see below, after an
+independent review corrected an overreach in the first pass at this
+analysis) that aggregate null does not mean hearing has no effect on
+these genomes' behavior at all -- one of the two dominant genomes
+checked does show a real per-step hearing effect at exactly index 4,
+just not one this particular summary statistic can see.
 
-**Why: traced directly to the champion genomes' wiring, not an
-instrumentation bug.** Before accepting a clean null like this, checked
-whether it was a counting artifact. It isn't -- `P(moved | heard)` and
-`P(moved | unheard)` land on identical values to 3-4 decimal places at
-every stimulus pair across every snapshot checked, which is what a real
-structural absence of effect looks like, not sampling noise. Confirmed
-directly by reconstructing each era's dominant genome from its
-snapshot's `dominant_genome` bits, developing its network
-(`altruism.network.Network`), and checking whether any HEAR unit
-(7-12) has a path -- direct or indirect, any number of hops/steps -- to
-the MOVE unit (19) via the genome's own connection graph:
+**Why, part 1: not an instrumentation bug (self-check, then confirmed
+by an independent Codex review).** Before accepting a clean null like
+this, checked whether it was a counting artifact. It isn't --
+`P(moved | heard)` and `P(moved | unheard)` land on identical values to
+3-4 decimal places at every stimulus pair across every snapshot
+checked, and a follow-up independent review (Codex, given the actual
+code, not a paraphrase) manually recomputed the totals straight from
+the `.npz` arrays and confirmed they match `hearing_response_summary()`
+exactly, with `20/20` relevant tests passing. The null in this specific
+metric -- "did hearing something change the per-trial probability of
+moving at least once" -- is real.
+
+**Why, part 2: the champion genomes' network wiring, and a correction
+after independent review.** Reconstructed each era's dominant genome
+from its snapshot's `dominant_genome` bits, developed its network
+(`altruism.network.Network`), and checked whether any HEAR unit (7-12)
+has a graph path -- direct or indirect -- to the MOVE unit (19):
 - The **42.0-floor champion** (days 12,000 and 13,000 -- the genome
   that held the bulk of the run's territory for ~12,400 of its 14,580
-  days) has **zero graph path from any hearing unit to MOVE at all**.
-  Its movement decision cannot be influenced by hearing under any
-  circumstance -- not weak, not overridden, structurally absent. This
-  alone accounts for most of the null result, since this genome
-  dominated the grid for most of the run's length.
+  days) has **zero graph path from any hearing unit to MOVE at all**,
+  confirmed independently by Codex re-deriving the same connection
+  list. This genome's movement decision cannot be influenced by hearing
+  under any circumstance, and since it dominated the grid for most of
+  the run, this alone accounts for most of the aggregate null.
 - The **26.0-era champion** (days 13,500 and 14,500, post-transition)
-  *does* have a wired path (hearing channel 'd' -> MOVE, weight -3) --
-  so this genome is structurally capable of the paper's mechanism.
-  Directly toggling hearing fully on/off, holding predator state and
-  location fixed, across every combination: the MOVE decision never
-  once flipped. The other inputs into MOVE (weights up to +-11) dominate
-  the threshold regardless of what that one hearing channel says, so
-  the wiring exists but is functionally vestigial.
+  *does* have a wired path (hearing channel 'd' -> MOVE, weight -3).
+  My first pass tested this by toggling hearing as a plain boolean
+  (all-0 vs all-1) and found no flip in MOVE's output, and concluded
+  the wiring was functionally vestigial -- **this was too strong. Real
+  hearing is a count** (how many of the six speech channels were
+  spoken, `prev_speech.sum(axis=0)`), not a 0/1 flag, and Codex's review
+  re-ran this genome through actual simulated trials with realistic
+  count-valued hearing: the HEAR->MOVE edge **does** flip the per-step
+  MOVE decision and the resulting score, specifically at stimulus index
+  4 (Pred/Pred) -- exactly the paper's own predicted case. That real
+  effect is invisible to the aggregate metric for two reasons: the
+  per-trial "moved at least once" bucket can already be set `True` by
+  an earlier step before the hearing-driven step occurs, and hearing
+  can independently steer `TO_R` (which direction to move), changing
+  position and score without ever registering as a moved/didn't-move
+  count at all.
 
-Conclusion: this is a genuine finding about what evolved, not a
-measurement problem. Whatever pushed these clones' scores above the
-never-move baseline, it wasn't "hear the alarm, then move" -- most
-likely their own direct sensing of the predator/location inputs, which
-feed MOVE independently of anyone's speech.
+Corrected conclusion: the 42.0-era champion (most of the run's length)
+genuinely never uses hearing for movement -- that finding holds up
+under independent review. The 26.0-era champion does show a real,
+paper-consistent hearing-to-movement effect at the predator stimulus;
+it's just invisible to the specific "moved at least once per trial"
+summary statistic this run computed, not absent from the genome's
+actual behavior. A finer-grained metric (per-step counterfactual
+move/direction under real vs. zeroed hearing, rather than a per-trial
+yes/no bucket) would be needed to see it in aggregate -- not built
+here, noted under "Not yet done" below.
 
 **Signal honesty: strongly selective, but the raw ratio is an
 artifact.** `signal_informativeness()` (Pred-present speech / no-Pred
@@ -589,11 +609,17 @@ much faster and cleaner (~25-100 days vs. Case 1's ~2,200-day contested
 back-and-forth). But "held longer" is not the same as "one victorious
 communicating clone" -- the lineage-succession finding above shows
 Case 2's floor era was itself a *sequence* of unrelated lineages
-cycling through the same score, and the hearing-response null result
-means this run doesn't confirm the paper's specific cautious-
-communicator mechanism was what got them there. Festival buys
-durability; it doesn't, at least in this run, produce the single
-long-lived kin-selected communicator the paper's mechanism describes.
+cycling through the same score, and (per the corrected hearing-response
+analysis above) the genome that held that floor for the vast majority
+of the run's length has no hearing-to-movement wiring at all -- so
+whatever made *it* successful, it wasn't the paper's cautious-
+communicator mechanism. That mechanism does show up, weakly and only
+detectably at the network-simulation level, in the later, shorter-lived
+26.0-era genome. Festival buys durability for a floor-holding strategy
+in general; it doesn't, at least in this run, mean the long-lived
+champion was the specific kin-selected communicator the paper's
+mechanism describes -- a *different*, later, less dominant genome shows
+that signature instead.
 
 ## Not yet run
 
@@ -601,7 +627,15 @@ long-lived kin-selected communicator the paper's mechanism describes.
   launched yet; a much longer commitment even parallelized.
 - A Case 1 redo (or a fresh Case 2 run at a different seed) with the
   full metric set now available from day 1 -- would let the
-  hearing-response null result above be checked for seed-dependence,
+  hearing-response findings above be checked for seed-dependence,
   rather than concluding from a single run.
   Checkpoint/resume means this no longer requires deciding up front --
   a run can always be extended or re-analyzed later without restarting.
+- A finer-grained hearing-response metric: the current
+  `hearing_response_summary()` uses a per-trial "moved at least once"
+  bucket, which a Codex review found can mask a real hearing effect
+  that occurs on a later step (after the bucket is already `True` from
+  an earlier, hearing-independent move) or that acts through `TO_R`
+  (direction) rather than `MOVE` itself. A per-step, counterfactual
+  (real vs. zeroed hearing) comparison would catch what the current
+  per-trial bucket cannot.

@@ -118,14 +118,17 @@ Case 1's best era), but lineage tracking shows it was a *succession* of
 unrelated clones trading the same score, not one clone holding on —
 invisible in score data alone. The paper's specific "cautious
 communicator" hearing-response signature (heard-alarm → moved,
-concentrated at the Left-Pred/Right-Pred stimulus) came back as an
-essentially null result across every stimulus pair — traced directly
-to the champion genomes' own network wiring (not an instrumentation
-bug): the genome that held the bulk of the run's territory has zero
-graph path from any hearing unit to its movement unit at all, and the
-later champion that does have such wiring never actually uses it (its
-movement decision is dominated by other, stronger inputs regardless of
-what it hears). Signal honesty and mixing-zone genetics both came back positive
+concentrated at the Left-Pred/Right-Pred stimulus) came back essentially
+null in aggregate — not an instrumentation bug (confirmed by an
+independent Codex review recomputing the raw counts), and the champion
+genome that held the bulk of the run's territory genuinely has zero
+network path from hearing to movement at all. But a Codex review also
+caught an overreach in the first pass of this analysis: the *later*,
+shorter-lived champion genome does show a real hearing-driven movement
+effect specifically at the predator stimulus, matching the paper's
+prediction — it's just invisible to the specific per-trial summary
+statistic used here, not absent from the genome's actual behavior (see
+`RESULTS.md` for the full trace). Signal honesty and mixing-zone genetics both came back positive
 (extremely selective Pred-triggered speech; borders modestly but
 consistently more genetically mismatched and lower-scoring than
 interiors).
@@ -134,8 +137,11 @@ interiors).
 - Case 3 (festival-only) — not launched yet; a much longer commitment
   even parallelized (99,980 days).
 - A Case 1 redo, or a Case 2 rerun at a different seed, with the full
-  metric set from day 1 — would check whether the hearing-response null
-  result above is seed-dependent rather than concluding from one run.
+  metric set from day 1 — would check whether the hearing-response
+  findings above are seed-dependent rather than concluding from one run.
+- A finer-grained hearing-response metric that catches later-step and
+  direction-mediated effects the current per-trial "moved at least
+  once" bucket can miss (see `RESULTS.md`).
 
 See `RESULTS.md` for validation details and status as the global level is
 built out.
